@@ -1,4 +1,4 @@
-# tsad-orchestra
+# TSAD-Orchestra
 
 **Time Series Anomaly Detection Orchestra** — an OpenAI-powered agent that analyses numeric time series and identifies anomalies.
 
