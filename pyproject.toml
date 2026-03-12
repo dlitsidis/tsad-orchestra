@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tsad-orchestra"
+version = "0.1.0"
+description = "Agent for time series anomaly detection"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    # LLM provider
+    "openai>=1.30.0",
+    # Numerical & data
+    "numpy>=1.26.0",
+    "pandas>=2.2.0",
+    # Utilities
+    "python-dotenv>=1.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.4.0",
+    "pre-commit>=3.7.0",
+    "mypy>=1.10.0",
+    "interrogate>=1.7.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # Pyflakes
+    "I",    # isort
+    "C4",   # flake8-comprehensions
+    "UP",   # pyupgrade
+]
+ignore = []
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+strict = true
+ignore_missing_imports = true
+
+
