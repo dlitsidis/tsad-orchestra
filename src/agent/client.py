@@ -1,54 +1,109 @@
-"""TSAD Orchestra Agent — minimal example.
+"""TSAD Orchestra Agent — LangChain MCP pipeline (fully fixed)."""
 
-Sends a time series to the model and asks it to identify anomalies.
-"""
-
+import asyncio
 import os
+import sys
+from pathlib import Path
 
 from dotenv import load_dotenv
-from openai import OpenAI
+from langchain.agents import create_agent
+from langchain_mcp_adapters.tools import load_mcp_tools
+from langchain_openai import ChatOpenAI
+from loguru import logger
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+from src.agent.models import AnomalyReport
+from src.agent.prompts import AGENT_SYSTEM_PROMPT, AGENT_USER_PROMPT
 
 load_dotenv()
 
 MODEL = "gpt-4o-mini"
-SYSTEM_PROMPT = (
-    "You are a time series anomaly detection assistant. "
-    "When given a numeric time series, identify any anomalous values, "
-    "explain why they are anomalous, and suggest the most likely cause."
-)
 
 
-def run(series: list[float]) -> str:
-    """Send a time series to the model and return an anomaly analysis.
+def default_mcp_server_params() -> StdioServerParameters:
+    repo_root = Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
 
-    Args:
-        series: List of numeric sensor readings to analyse.
+    pythonpath_parts = [str(repo_root)]
+    if env.get("PYTHONPATH"):
+        pythonpath_parts.append(env["PYTHONPATH"])
 
-    Returns:
-        The model's explanation of any detected anomalies.
-    """
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    user_prompt = (
-        f"Here is a time series of sensor readings: {series}.\n"
-        "Please identify any anomalies, state their indices and values, "
-        "and briefly explain what might have caused them."
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
+
+    return StdioServerParameters(
+        command=sys.executable,
+        args=["-m", "src.mcp_server"],
+        env=env,
     )
-    response = client.chat.completions.create(
+
+
+async def run(series: list[float]) -> AnomalyReport:
+    llm_client = ChatOpenAI(
+        api_key=os.environ.get("OPENAI_API_KEY", ""),
         model=MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
     )
-    content = response.choices[0].message.content
-    if content is None:
-        raise ValueError("Model returned no text content.")
-    return content
+
+    logger.info("Starting TSAD run with {} points.", len(series))
+
+    server_params = default_mcp_server_params()
+
+    async with stdio_client(server_params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+
+            tools = await load_mcp_tools(session)
+
+            tool_names = [tool.name for tool in tools]
+
+            logger.info("Discovered {} MCP tools: {}", len(tool_names), tool_names)
+
+            agent = create_agent(
+                model=llm_client,
+                tools=tools,
+                system_prompt=AGENT_SYSTEM_PROMPT,
+                response_format=AnomalyReport,
+            )
+
+            inputs = {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": AGENT_USER_PROMPT.format(series=series),
+                    }
+                ]
+            }
+
+            result = await agent.ainvoke(inputs)
+
+            structured = result.get("structured_response")
+
+            if structured is None:
+                raise ValueError("Agent did not return structured ")
+
+            return structured  # type: ignore[no-any-return]
 
 
 if __name__ == "__main__":
-    # Mock example: stable signal with two obvious spikes
-    mock_series = [10.1, 10.3, 9.9, 10.2, 10.0, 50.0, 10.1, 9.8, 10.4, -30.0, 10.2]
-    print(f"Input series: {mock_series}\n")
-    answer = run(mock_series)
-    print(answer)
+    mock_series = [
+        10.1,
+        10.3,
+        9.9,
+        10.2,
+        10.0,
+        50.0,
+        10.1,
+        9.8,
+        10.4,
+        -30.0,
+        10.2,
+    ]
+
+    logger.info("Input series: {}", mock_series)
+
+    try:
+        answer = asyncio.run(run(mock_series))
+        logger.info("Result: {}", answer.model_dump())
+
+    except Exception as e:
+        logger.error(e)
