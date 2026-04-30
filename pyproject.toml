@@ -11,10 +11,17 @@ requires-python = ">=3.11"
 dependencies = [
     # LLM provider
     "openai>=1.30.0",
+    # LangChain / MCP agent stack
+    "langchain>=1.2.16",
+    "langchain-openai>=1.2.1",
+    "langchain-mcp-adapters>=0.1.7",
+    "fastmcp>=3.2.4",
+    "mcp>=1.27.0",
     # Numerical & data
     "numpy>=1.26.0",
     "pandas>=2.2.0",
     # Utilities
+    "loguru>=0.7.3",
     "python-dotenv>=1.0.0",
     "requests>=2.33.1",
     "sqlalchemy>=2.0.49",
