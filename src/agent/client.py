@@ -39,8 +39,12 @@ def default_mcp_server_params() -> StdioServerParameters:
 
 
 async def run(series: list[float]) -> AnomalyReport:
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY environment variable is not set.")
+
     llm_client = ChatOpenAI(
-        api_key=os.environ.get("OPENAI_API_KEY", ""),
+        api_key=api_key,
         model=MODEL,
     )
 
@@ -79,7 +83,9 @@ async def run(series: list[float]) -> AnomalyReport:
             structured = result.get("structured_response")
 
             if structured is None:
-                raise ValueError("Agent did not return structured ")
+                raise ValueError(
+                    "Agent did not return a structured response in the expected 'structured_response' field."
+                )
 
             return structured  # type: ignore[no-any-return]
 
@@ -105,5 +111,5 @@ if __name__ == "__main__":
         answer = asyncio.run(run(mock_series))
         logger.info("Result: {}", answer.model_dump())
 
-    except Exception as e:
-        logger.error(e)
+    except Exception:
+        logger.exception("TSAD run failed.")
