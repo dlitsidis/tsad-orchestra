@@ -16,6 +16,9 @@ dependencies = [
     "pandas>=2.2.0",
     # Utilities
     "python-dotenv>=1.0.0",
+    "requests>=2.33.1",
+    "sqlalchemy>=2.0.49",
+    "psycopg2-binary>=2.9.12",
 ]
 
 [dependency-groups]
