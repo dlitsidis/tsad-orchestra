@@ -26,6 +26,7 @@ dependencies = [
     "requests>=2.33.1",
     "sqlalchemy>=2.0.49",
     "psycopg2-binary>=2.9.12",
+    "pyod>=3.2.1",
 ]
 
 [dependency-groups]
