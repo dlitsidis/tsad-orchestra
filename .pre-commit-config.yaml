@@ -11,7 +11,10 @@ repos:
       - id: mypy
         name: mypy (type hints)
         entry: mypy
-        language: system
+        language: python
+        additional_dependencies:
+          - mypy>=1.10.0
+          - pydantic>=2.0.0
         types: [python]
         args: [src/]
         pass_filenames: false

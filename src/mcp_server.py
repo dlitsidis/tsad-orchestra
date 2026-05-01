@@ -9,7 +9,7 @@ from src.agent.models import Anomaly, DetectionStubResult, TimeSeriesData
 mcp = FastMCP("tsad-orchestra")
 
 
-@mcp.tool()  # type: ignore[misc]
+@mcp.tool()  # type: ignore[untyped-decorator]
 def load_time_series(series: list[float], source: str | None = None) -> TimeSeriesData:
     """Load a time series payload.
 
@@ -23,8 +23,10 @@ def load_time_series(series: list[float], source: str | None = None) -> TimeSeri
     return TimeSeriesData(series=series, source=source or "inline")
 
 
-@mcp.tool()  # type: ignore[misc]
-def detect_anomalies(series: list[float]) -> DetectionStubResult:
+@mcp.tool()  # type: ignore[untyped-decorator]
+def detect_anomalies(
+    series: list[float],
+) -> DetectionStubResult:
     """Detect anomalies in a time series (stub implementation).
 
     Args:
