@@ -154,14 +154,14 @@ def build_graph(llm_with_tools: Any, tool_node: ToolNode, llm: ChatOpenAI) -> An
     return builder.compile()
 
 
-async def run(series: list[float]) -> AnomalyReport:
+async def run(series_id: str) -> AnomalyReport:
     """Run the TSAD agent pipeline on a time series and return an anomaly report.
 
     Starts the MCP server subprocess, loads its tools, wires up the LangGraph
     agent graph, and invokes it with the provided series.
 
     Args:
-        series: A list of float values representing the time series to analyse.
+        series_id: The ID of the time series to analyse.
 
     Returns:
         An AnomalyReport describing any detected anomalies in the series.
@@ -184,14 +184,13 @@ async def run(series: list[float]) -> AnomalyReport:
             tool_node = ToolNode(tools)
 
             graph = build_graph(llm_with_tools, tool_node, llm)
-
             result = cast(
                 AgentState,
                 await graph.ainvoke(
                     {
                         "messages": [
                             {"role": "system", "content": AGENT_SYSTEM_PROMPT},
-                            {"role": "user", "content": AGENT_USER_PROMPT.format(series=series)},
+                            {"role": "user", "content": AGENT_USER_PROMPT.format(series_id=series_id)},
                         ],
                         "result": None,
                     }
@@ -199,26 +198,3 @@ async def run(series: list[float]) -> AnomalyReport:
             )
 
             return cast(AnomalyReport, result["result"])
-
-
-if __name__ == "__main__":
-    mock_series = [
-        10.1,
-        10.3,
-        9.9,
-        10.2,
-        10.0,
-        50.0,
-        10.1,
-        9.8,
-        10.4,
-        -30.0,
-        10.2,
-    ]
-
-    try:
-        result = asyncio.run(run(mock_series))
-        logger.info("Anomaly Report: {}", result.model_dump())
-
-    except Exception as e:
-        logger.error("FAILED: {}", repr(e))
