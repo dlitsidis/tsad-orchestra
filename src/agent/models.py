@@ -2,7 +2,7 @@
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 import pandas as pd
-
+from dataclasses import dataclass
 
 class Anomaly(BaseModel):
     """Represents a single anomaly in a time series."""
@@ -44,3 +44,18 @@ class DetectionStubResult(BaseModel):
         description="Detected anomalies (stubbed).",
     )
     notes: str = Field(..., description="Stub detector notes.")
+
+
+@dataclass
+class TimeSeriesProfile:
+    """Data profile for a time series."""
+    series_name: str
+    count: int
+    min_value: float
+    max_value: float
+    mean_value: float
+    median_value: float
+    std_dev: float
+    first_timestamp: str
+    last_timestamp: str
+    duration_seconds: float

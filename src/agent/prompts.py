@@ -9,6 +9,7 @@ Do NOT load or analyze the time-series data directly. Instead, use your availabl
 4. Report the detector used and its results"""
 
 AGENT_USER_PROMPT = """
+You have been given a time-series dataset name {series_id} to analyze for anomalies. Your task is to:
 Instructions:
 - Use tools to profile the time-series data (do NOT load data into context)
 - Analyze key characteristics: length, stationarity, trend, seasonality, outlier density

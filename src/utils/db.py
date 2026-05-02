@@ -236,3 +236,38 @@ def get_table_schema(table_name: str) -> pd.DataFrame:
         raise ValueError(f"Database configuration error: {e}") from e
     except Exception as e:
         raise Exception(f"Failed to get table schema: {e}") from e
+
+
+def execute_query(
+    query: str,
+    params: dict | None = None,
+) -> pd.DataFrame:
+    """Execute a SQL query and return results as a DataFrame.
+
+    Args:
+        query: SQL query string to execute.
+        params: Optional dictionary of parameters for parameterized queries.
+
+    Returns:
+        DataFrame with query results.
+
+    Raises:
+        ValueError: If database connection fails.
+        Exception: If query execution fails.
+    """
+    try:
+        db_url = get_db_url()
+        engine = create_engine(db_url)
+
+        with engine.connect() as connection:
+            if params:
+                df = pd.read_sql(text(query), connection, params=params)
+            else:
+                df = pd.read_sql(text(query), connection)
+
+        return df
+
+    except ValueError as e:
+        raise ValueError(f"Database configuration error: {e}") from e
+    except Exception as e:
+        raise Exception(f"Failed to execute query: {e}") from e

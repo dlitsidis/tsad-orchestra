@@ -20,6 +20,9 @@ dependencies = [
     # Numerical & data
     "numpy>=1.26.0",
     "pandas>=2.2.0",
+    # UI & visualization
+    "streamlit>=1.28.0",
+    "plotly>=5.17.0",
     # Utilities
     "loguru>=0.7.3",
     "python-dotenv>=1.0.0",

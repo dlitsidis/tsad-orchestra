@@ -3,8 +3,8 @@
 from __future__ import annotations
 from fastmcp import FastMCP
 
-from src.agent.models import Anomaly, DetectionStubResult, TimeSeriesData
-from src.utils.db import read_time_series_by_id, read_time_series
+from src.agent.models import Anomaly, DetectionStubResult, TimeSeriesProfile
+from src.utils.db import read_time_series_by_id, read_time_series, execute_query, get_time_series_name, list_tables
 
 import numpy as np
 import pandas as pd
@@ -14,6 +14,117 @@ from pyod.models.iforest import IForest
 from pyod.models.pca import PCA
 
 mcp = FastMCP("tsad-orchestra")
+
+@mcp.tool()  # type: ignore[untyped-decorator]
+def profile_time_series(
+    name: str,
+) -> dict:
+    """Profile a time series with statistical summary.
+
+    Computes comprehensive statistics about a time series including:
+    - Count: number of data points
+    - Min/Max: minimum and maximum values
+    - Mean: average value
+    - Median: middle value
+    - Std Dev: standard deviation
+    - Time range: first and last timestamp, duration in seconds
+
+    Args:
+        name: Name or ID of the time series (e.g., '001_NAB_id_1' or '1').
+
+    Returns:
+        dict: TimeSeriesProfile with statistical summary, or error details.
+    """
+    try:
+        # Get the table name
+        if name.isdigit():
+            table_name = get_time_series_name(name)
+        else:
+            table_name = name
+
+        # Execute comprehensive profiling query
+        query = f"""
+        SELECT
+            COUNT(*) as count,
+            MIN(data) as min_value,
+            MAX(data) as max_value,
+            AVG(data) as mean_value,
+            PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY data) as median_value,
+            STDDEV_POP(data) as std_dev,
+            MIN(time) as first_timestamp,
+            MAX(time) as last_timestamp,
+            EXTRACT(EPOCH FROM (MAX(time) - MIN(time))) as duration_seconds
+        FROM "{table_name}"
+        """
+
+        result_df = execute_query(query)
+
+        if result_df.empty:
+            return {
+                "error": f"No data found in table '{table_name}'",
+                "series_name": table_name,
+            }
+
+        row = result_df.iloc[0]
+
+        profile = TimeSeriesProfile(
+            series_name=table_name,
+            count=int(row["count"]),
+            min_value=float(row["min_value"]),
+            max_value=float(row["max_value"]),
+            mean_value=float(row["mean_value"]),
+            median_value=float(row["median_value"]),
+            std_dev=float(row["std_dev"]) if pd.notna(row["std_dev"]) else 0.0,
+            first_timestamp=str(row["first_timestamp"]),
+            last_timestamp=str(row["last_timestamp"]),
+            duration_seconds=float(row["duration_seconds"]),
+        )
+
+        return {
+            "series_name": profile.series_name,
+            "count": profile.count,
+            "min_value": profile.min_value,
+            "max_value": profile.max_value,
+            "mean_value": profile.mean_value,
+            "median_value": profile.median_value,
+            "std_dev": profile.std_dev,
+            "first_timestamp": profile.first_timestamp,
+            "last_timestamp": profile.last_timestamp,
+            "duration_seconds": profile.duration_seconds,
+        }
+
+    except ValueError as e:
+        return {
+            "error": f"Failed to profile series '{name}': {e}",
+            "series_name": name,
+        }
+    except Exception as e:
+        return {
+            "error": f"Profiling error: {e}",
+            "series_name": name,
+        }
+
+
+@mcp.tool()  # type: ignore[untyped-decorator]
+def list_time_series() -> dict:
+    """List all available time series in the database.
+
+    Returns a list of all tables in the public schema.
+
+    Returns:
+        dict: Contains 'tables' list with table names, or error details.
+    """
+    try:
+        tables = list_tables()
+        return {
+            "tables": tables,
+            "count": len(tables),
+        }
+    except Exception as e:
+        return {
+            "error": f"Failed to list tables: {e}",
+            "tables": [],
+        }
 
 @mcp.tool()  # type: ignore[untyped-decorator]
 def lof_detector(
@@ -40,16 +151,26 @@ def lof_detector(
     """
     try:
         if name.isdigit():
-            series = read_time_series_by_id(name)
+            df = read_time_series_by_id(name)
         else:
-            series = read_time_series(name)
+            df = read_time_series(name)
+        
+        if isinstance(df, pd.DataFrame):
+            if df.empty:
+                return DetectionStubResult(
+                    anomalies=[],
+                    notes=f"LOF detector: No data found for series '{name}'.",
+                )
+            series = df.iloc[:, 1].values
+        else:
+            series = df
     except ValueError as e:
         return DetectionStubResult(
             anomalies=[],
             notes=f"LOF detector: Error loading series '{name}': {e}",
         )
     
-    if not series or len(series) < 20:
+    if len(series) < 20:
         return DetectionStubResult(
             anomalies=[],
             notes="LOF detector: insufficient data (need at least 20 points).",
@@ -100,19 +221,24 @@ def hbos_detector(
     """
     try:
         if name.isdigit():
-            series = read_time_series_by_id(name)
+            df = read_time_series_by_id(name)
         else:
-            series = read_time_series(name)
+            df = read_time_series(name)
+        
+        # Extract values from DataFrame if needed
+        if isinstance(df, pd.DataFrame):
+            if df.empty:
+                return DetectionStubResult(
+                    anomalies=[],
+                    notes=f"HBOS detector: No data found for series '{name}'.",
+                )
+            series = df.iloc[:, 1].values
+        else:
+            series = df
     except ValueError as e:
         return DetectionStubResult(
             anomalies=[],
             notes=f"HBOS detector: Error loading series '{name}': {e}",
-        )
-    
-    if not series:
-        return DetectionStubResult(
-            anomalies=[],
-            notes="HBOS detector: empty series.",
         )
 
     array = np.array(series).reshape(-1, 1)
@@ -161,19 +287,24 @@ def iforest_detector(
     """
     try:
         if name.isdigit():
-            series = read_time_series_by_id(name)
+            df = read_time_series_by_id(name)
         else:
-            series = read_time_series(name)
+            df = read_time_series(name)
+        
+        # Extract values from DataFrame if needed
+        if isinstance(df, pd.DataFrame):
+            if df.empty:
+                return DetectionStubResult(
+                    anomalies=[],
+                    notes=f"IForest detector: No data found for series '{name}'.",
+                )
+            series = df.iloc[:, 1].values
+        else:
+            series = df
     except ValueError as e:
         return DetectionStubResult(
             anomalies=[],
             notes=f"IForest detector: Error loading series '{name}': {e}",
-        )
-    
-    if not series:
-        return DetectionStubResult(
-            anomalies=[],
-            notes="IForest detector: empty series.",
         )
 
     array = np.array(series).reshape(-1, 1)
@@ -224,21 +355,26 @@ def pca_detector(
     """
     try:
         if name.isdigit():
-            series = read_time_series_by_id(name)
+            df = read_time_series_by_id(name)
         else:
-            series = read_time_series(name)
+            df = read_time_series(name)
+        
+        # Extract values from DataFrame if needed
+        if isinstance(df, pd.DataFrame):
+            if df.empty:
+                return DetectionStubResult(
+                    anomalies=[],
+                    notes=f"PCA detector: No data found for series '{name}'.",
+                )
+            series = df.iloc[:, 1].values
+        else:
+            series = df
     except ValueError as e:
         return DetectionStubResult(
             anomalies=[],
             notes=f"PCA detector: Error loading series '{name}': {e}",
         )
     
-    if not series:
-        return DetectionStubResult(
-            anomalies=[],
-            notes="PCA detector: empty series.",
-        )
-
     array = np.array(series).reshape(-1, 1)
     model = PCA()
     predictions = model.fit_predict(array)
@@ -289,19 +425,24 @@ def poly_detector(
     """
     try:
         if name.isdigit():
-            series = read_time_series_by_id(name)
+            df = read_time_series_by_id(name)
         else:
-            series = read_time_series(name)
+            df = read_time_series(name)
+        
+        # Extract values from DataFrame if needed
+        if isinstance(df, pd.DataFrame):
+            if df.empty:
+                return DetectionStubResult(
+                    anomalies=[],
+                    notes=f"Poly detector: No data found for series '{name}'.",
+                )
+            series = df.iloc[:, 1].values
+        else:
+            series = df
     except ValueError as e:
         return DetectionStubResult(
             anomalies=[],
             notes=f"Poly detector: Error loading series '{name}': {e}",
-        )
-    
-    if not series or len(series) < 4:
-        return DetectionStubResult(
-            anomalies=[],
-            notes="Poly detector: insufficient data (need at least 4 points).",
         )
 
     array = np.array(series)
