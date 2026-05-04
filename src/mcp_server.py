@@ -135,9 +135,9 @@ def lof_detector(
     Best for identifying local anomalies in time series with non-uniform or varying densities.
     It compares the local density of each point to that of its k nearest neighbours, flagging
     points that are significantly less dense than their surroundings as anomalies.
-    Use this when anomalies are expected to be contextual (i.e. deviations relative to
-    a local neighbourhood) rather than global outliers against the full distribution.
-
+    This detector is most effective when anomalies are contextual (i.e., deviations relative to
+    a local neighborhood) rather than global outliers against the full distribution.
+    It requires a minimum of 20 data points for effective operation, as it uses `n_neighbors=20`.
     Complexity:
         Time  — O(n²) with brute-force k-NN (default for small n); O(n log n) with
                 ball-tree / KD-tree indexing for larger n.
