@@ -1,15 +1,16 @@
 """Pydantic output models for TSAD Orchestra."""
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer
-import pandas as pd
 from dataclasses import dataclass
+
+import pandas as pd
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
+
 
 class Anomaly(BaseModel):
     """Represents a single anomaly in a time series."""
 
     index: int = Field(..., description="Index of the anomalous value in the series.")
     value: float = Field(..., description="Anomalous value at the index.")
-    # reason: str = Field(..., description="Why the value is considered anomalous.")
 
 
 class AnomalyReport(BaseModel):
@@ -19,7 +20,27 @@ class AnomalyReport(BaseModel):
         default_factory=list,
         description="List of detected anomalies.",
     )
+    detector_used: str = Field(
+        ..., description="Name of the detector tool selected for the final report."
+    )  # noqa: E501
     summary: str = Field(..., description="Summary of anomaly detection results.")
+
+
+class ValidationResult(BaseModel):
+    """Structured output produced by the validator agent.
+
+    Attributes:
+        accepted: True if the primary report passes validation; False if it
+            must be refined.
+        critique: Human-readable summary of the issues found.  Empty string
+            when accepted is True.
+        severity: One of "minor", "major", or "critical" - guides whether the
+            primary agent should do a light touch-up or a full re-analysis.
+    """
+
+    accepted: bool
+    critique: str
+    severity: str = "minor"  # "minor" | "major" | "critical"
 
 
 class TimeSeriesData(BaseModel):
@@ -27,7 +48,9 @@ class TimeSeriesData(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    series: pd.DataFrame = Field(..., description="Loaded time series as DataFrame with time and data columns.")
+    series: pd.DataFrame = Field(
+        ..., description="Loaded time series as DataFrame with time and data columns."
+    )  # noqa: E501
     source: str = Field(..., description="Source identifier for the series.")
 
     @field_serializer("series", when_used="json")
@@ -49,6 +72,7 @@ class DetectionStubResult(BaseModel):
 @dataclass
 class TimeSeriesProfile:
     """Data profile for a time series."""
+
     series_name: str
     count: int
     min_value: float
