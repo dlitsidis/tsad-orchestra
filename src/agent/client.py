@@ -3,6 +3,7 @@ TSAD Orchestra Agent — LangGraph + MCP
 Dual-agent framework: primary analysis agent + validator/refinement agent.
 """
 
+import asyncio
 import functools
 import json
 import os
@@ -19,6 +20,7 @@ from langgraph.prebuilt import ToolNode
 from loguru import logger
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from openai import RateLimitError
 from pydantic import SecretStr
 
 from src.agent.models import Anomaly, AnomalyReport, ValidationResult
@@ -53,6 +55,19 @@ class AgentState(TypedDict):
     critique: str
     iteration: int
     series_id: str
+
+
+async def _invoke_with_backoff(runnable: Any, messages: list, retries: int = 5) -> Any:
+    """Retry an LLM call on rate limit with exponential backoff."""
+    for attempt in range(retries):
+        try:
+            return await runnable.ainvoke(messages)
+        except RateLimitError:
+            if attempt == retries - 1:
+                raise
+            wait = 2**attempt
+            logger.warning("Rate limit hit, retrying in {}s (attempt {}/{})", wait, attempt + 1, retries)
+            await asyncio.sleep(wait)
 
 
 def default_mcp_server_params() -> StdioServerParameters:
@@ -177,7 +192,8 @@ async def finalize(state: AgentState, llm: ChatOpenAI) -> dict[str, Any]:
     # Let the LLM only fill in summary + detector_used (small, safe task)
     structured = cast(
         AnomalyReport,
-        await llm.with_structured_output(AnomalyReport).ainvoke(
+        await _invoke_with_backoff(
+            llm.with_structured_output(AnomalyReport),
             [
                 {
                     "role": "user",
@@ -188,7 +204,7 @@ async def finalize(state: AgentState, llm: ChatOpenAI) -> dict[str, Any]:
                         f"Leave 'anomalies' as an empty list — it will be filled separately."
                     ),
                 }
-            ]
+            ],
         ),
     )
 
@@ -226,11 +242,12 @@ async def validate(state: AgentState, llm: ChatOpenAI) -> dict[str, Any]:
 
     validation = cast(
         ValidationResult,
-        await llm.with_structured_output(ValidationResult).ainvoke(
+        await _invoke_with_backoff(
+            llm.with_structured_output(ValidationResult),
             [
                 {"role": "system", "content": VALIDATOR_SYSTEM_PROMPT},
                 {"role": "user", "content": user_msg},
-            ]
+            ],
         ),
     )
 

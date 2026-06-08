@@ -19,6 +19,7 @@ You have been given a time-series dataset name {series_id} to analyze for anomal
 - Call the appropriate detector tool to run the analysis on the data
 - Report which detector was used and present the detected anomalies/results from the tool
 - Explain why that detector was selected based on the data characteristics\
+
 """
 
 
