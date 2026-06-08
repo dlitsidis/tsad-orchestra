@@ -4,6 +4,7 @@ Dual-agent framework: primary analysis agent + validator/refinement agent.
 """
 
 import functools
+import json
 import os
 import sys
 from pathlib import Path
@@ -20,7 +21,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from pydantic import SecretStr
 
-from src.agent.models import AnomalyReport, ValidationResult
+from src.agent.models import Anomaly, AnomalyReport, ValidationResult
 from src.agent.prompts import (
     AGENT_SYSTEM_PROMPT,
     AGENT_USER_PROMPT,
@@ -135,23 +136,74 @@ def _collect_tool_results(messages: list[Any]) -> str:
 
 
 async def finalize(state: AgentState, llm: ChatOpenAI) -> dict[str, Any]:
-    """Extract a structured AnomalyReport from the full tool history,
-    then clear messages so the next iteration starts fresh.
-    """
     context = _collect_tool_results(state["messages"])
 
+    tools_called = list(
+        dict.fromkeys(tc["name"] for msg in state["messages"] if hasattr(msg, "tool_calls") for tc in (msg.tool_calls or []))
+    )
+
+    # Parse anomalies directly from tool results — don't trust the LLM to
+    # faithfully copy 1000+ items out of a long context string.
+    raw_anomalies: list[dict] = []
+    last_detector: str = ""
+    for msg in state["messages"]:
+        if getattr(msg, "type", None) == "tool":
+            tool_call_id = getattr(msg, "tool_call_id", "")
+            tool_name = next(
+                (
+                    tc["name"]
+                    for m in state["messages"]
+                    for tc in (getattr(m, "tool_calls", None) or [])
+                    if tc["id"] == tool_call_id
+                ),
+                "",
+            )
+            # Normalise content: LangChain may give a str or a list of blocks
+            content = msg.content
+            if isinstance(content, list):
+                content = " ".join(block.get("text", "") if isinstance(block, dict) else str(block) for block in content)
+            logger.debug("Tool '{}' raw content: {:.300}", tool_name, content)
+            try:
+                payload = json.loads(content)
+                if "anomalies" in payload:
+                    raw_anomalies = payload["anomalies"]
+                    last_detector = tool_name
+                    logger.debug("Parsed {} anomalies from '{}'", len(raw_anomalies), tool_name)
+                else:
+                    logger.debug("Tool '{}' has no 'anomalies' key. Keys: {}", tool_name, list(payload.keys()))
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.debug("Tool '{}' content not JSON: {}", tool_name, e)
+
+    # Let the LLM only fill in summary + detector_used (small, safe task)
     structured = cast(
         AnomalyReport,
         await llm.with_structured_output(AnomalyReport).ainvoke(
             [
                 {
                     "role": "user",
-                    "content": f"Extract an AnomalyReport from the following detector outputs:\n\n{context}",
+                    "content": (
+                        f"Given these detector outputs, write a concise summary and identify "
+                        f"the single detector whose results are being reported.\n\n{context}\n\n"
+                        f"For 'detector_used', set ONLY the one detector that produced the final anomaly list. "
+                        f"Leave 'anomalies' as an empty list — it will be filled separately."
+                    ),
                 }
-            ]  # noqa: E501
+            ]
         ),
     )
-    logger.info("Primary agent produced report (iteration {})", state["iteration"] + 1)
+
+    # Overwrite with the directly parsed values — no LLM hallucination risk
+    structured.anomalies = [Anomaly(**a) for a in raw_anomalies]
+    structured.detector_used = last_detector or structured.detector_used
+    structured.tools_called = tools_called
+    structured.anomaly_count = len(structured.anomalies)
+
+    logger.info(
+        "Primary agent produced report (iteration {}): {} anomalies from {}",
+        state["iteration"] + 1,
+        len(structured.anomalies),
+        structured.detector_used,
+    )
     return {"result": structured, "messages": []}
 
 

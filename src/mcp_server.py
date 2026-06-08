@@ -1,19 +1,20 @@
 """FastMCP server module for TSAD Orchestra tool discovery."""
 
 from __future__ import annotations
-from fastmcp import FastMCP
-
-from src.agent.models import Anomaly, DetectionStubResult, TimeSeriesProfile
-from src.utils.db import read_time_series_by_id, read_time_series, execute_query, get_time_series_name, list_tables
 
 import numpy as np
 import pandas as pd
-from pyod.models.lof import LOF
+from fastmcp import FastMCP
 from pyod.models.hbos import HBOS
 from pyod.models.iforest import IForest
+from pyod.models.lof import LOF
 from pyod.models.pca import PCA
 
+from src.agent.models import Anomaly, DetectionStubResult, TimeSeriesProfile
+from src.utils.db import execute_query, get_time_series_name, list_tables, read_time_series, read_time_series_by_id
+
 mcp = FastMCP("tsad-orchestra")
+
 
 @mcp.tool()  # type: ignore[untyped-decorator]
 def profile_time_series(
@@ -126,6 +127,7 @@ def list_time_series() -> dict:
             "tables": [],
         }
 
+
 @mcp.tool()  # type: ignore[untyped-decorator]
 def lof_detector(
     name: str,
@@ -154,7 +156,7 @@ def lof_detector(
             df = read_time_series_by_id(name)
         else:
             df = read_time_series(name)
-        
+
         if isinstance(df, pd.DataFrame):
             if df.empty:
                 return DetectionStubResult(
@@ -169,7 +171,7 @@ def lof_detector(
             anomalies=[],
             notes=f"LOF detector: Error loading series '{name}': {e}",
         )
-    
+
     if len(series) < 20:
         return DetectionStubResult(
             anomalies=[],
@@ -184,7 +186,7 @@ def lof_detector(
         Anomaly(
             index=int(i),
             value=float(series[i]),
-            reason=f"LOF anomaly: local outlier factor detected.",
+            reason="LOF anomaly: local outlier factor detected.",
         )
         for i in range(len(series))
         if predictions[i] == 1
@@ -224,7 +226,7 @@ def hbos_detector(
             df = read_time_series_by_id(name)
         else:
             df = read_time_series(name)
-        
+
         # Extract values from DataFrame if needed
         if isinstance(df, pd.DataFrame):
             if df.empty:
@@ -290,7 +292,7 @@ def iforest_detector(
             df = read_time_series_by_id(name)
         else:
             df = read_time_series(name)
-        
+
         # Extract values from DataFrame if needed
         if isinstance(df, pd.DataFrame):
             if df.empty:
@@ -358,7 +360,7 @@ def pca_detector(
             df = read_time_series_by_id(name)
         else:
             df = read_time_series(name)
-        
+
         # Extract values from DataFrame if needed
         if isinstance(df, pd.DataFrame):
             if df.empty:
@@ -374,7 +376,7 @@ def pca_detector(
             anomalies=[],
             notes=f"PCA detector: Error loading series '{name}': {e}",
         )
-    
+
     array = np.array(series).reshape(-1, 1)
     model = PCA()
     predictions = model.fit_predict(array)
@@ -428,7 +430,7 @@ def poly_detector(
             df = read_time_series_by_id(name)
         else:
             df = read_time_series(name)
-        
+
         # Extract values from DataFrame if needed
         if isinstance(df, pd.DataFrame):
             if df.empty:

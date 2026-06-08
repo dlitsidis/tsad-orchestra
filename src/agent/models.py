@@ -14,15 +14,13 @@ class Anomaly(BaseModel):
 
 
 class AnomalyReport(BaseModel):
-    """Describes anomaly detection results for a time series."""
-
     anomalies: list[Anomaly] = Field(
         default_factory=list,
         description="List of detected anomalies.",
     )
-    detector_used: str = Field(
-        ..., description="Name of the detector tool selected for the final report."
-    )  # noqa: E501
+    anomaly_count: int = Field(default=0, description="Total number of anomalies detected by the selected detector.")
+    detector_used: str = Field(..., description="Name of the detector selected for the final report.")
+    tools_called: list[str] = Field(default_factory=list, description="All tool names called during analysis.")
     summary: str = Field(..., description="Summary of anomaly detection results.")
 
 
@@ -48,9 +46,7 @@ class TimeSeriesData(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    series: pd.DataFrame = Field(
-        ..., description="Loaded time series as DataFrame with time and data columns."
-    )  # noqa: E501
+    series: pd.DataFrame = Field(..., description="Loaded time series as DataFrame with time and data columns.")  # noqa: E501
     source: str = Field(..., description="Source identifier for the series.")
 
     @field_serializer("series", when_used="json")

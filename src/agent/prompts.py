@@ -9,8 +9,7 @@ Do NOT load or analyze the time-series data directly. Instead, use your availabl
 3. Select and run the appropriate detector using the available tools
 4. Report the detector used and its results
 
-You MUST always call tools to produce your analysis. Never respond with text alone.\
-"""  # noqa: E501
+"""
 
 AGENT_USER_PROMPT = """\
 You have been given a time-series dataset name {series_id} to analyze for anomalies. Your task is to:
@@ -20,7 +19,7 @@ You have been given a time-series dataset name {series_id} to analyze for anomal
 - Call the appropriate detector tool to run the analysis on the data
 - Report which detector was used and present the detected anomalies/results from the tool
 - Explain why that detector was selected based on the data characteristics\
-"""  # noqa: E501
+"""
 
 
 VALIDATOR_SYSTEM_PROMPT = """\

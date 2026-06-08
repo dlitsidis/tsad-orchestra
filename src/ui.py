@@ -71,7 +71,7 @@ def plot_time_series(df: pd.DataFrame, anomalies: list[dict] | None = None) -> g
             y=df.iloc[:, 1],
             mode="lines",
             name="Time Series",
-            line=dict(color="steelblue", width=2),
+            line={"color": "steelblue", "width": 2},
             hovertemplate="<b>Index:</b> %{x}<br><b>Value:</b> %{y:.4f}<extra></extra>",
         )
     )
@@ -89,7 +89,7 @@ def plot_time_series(df: pd.DataFrame, anomalies: list[dict] | None = None) -> g
                     y=anomaly_values,
                     mode="markers",
                     name="Anomalies",
-                    marker=dict(color="red", size=10, symbol="x"),
+                    marker={"color": "red", "size": 10, "symbol": "x"},
                     hovertemplate="<b>Anomaly at Index:</b> %{x}<br><b>Value:</b> %{y:.4f}<extra></extra>",
                 )
             )
@@ -108,10 +108,10 @@ def plot_time_series(df: pd.DataFrame, anomalies: list[dict] | None = None) -> g
 
 def run_anomaly_detection_sync(series_id: str) -> Any:
     """Run the agent's anomaly detection on the selected time series (sync wrapper).
-    
+
     Args:
         series_id: The ID or name of the time series to analyze.
-    
+
     Returns:
         AnomalyReport with detected anomalies.
     """
@@ -128,7 +128,7 @@ def run_anomaly_detection_sync(series_id: str) -> Any:
         return report
 
     except Exception as e:
-        error_msg = f"Error running anomaly detection: {str(e)}"
+        st.error(f"Error running anomaly detection: {str(e)}")
         logger.error(f"Anomaly detection failed: {e}")
         raise
 
@@ -136,16 +136,11 @@ def run_anomaly_detection_sync(series_id: str) -> Any:
 def main():
     """Main Streamlit application."""
     st.title("📊 TSAD Orchestra — Time Series Anomaly Detection")
-    st.markdown(
-        "An intelligent agent-powered tool for detecting anomalies in time series data from your database."
-    )
+    st.markdown("An intelligent agent-powered tool for detecting anomalies in time series data from your database.")
 
     # Check environment variables
     if not os.getenv("OPENAI_API_KEY"):
-        st.error(
-            "❌ Missing OPENAI_API_KEY environment variable. "
-            "Please set it in your .env file before running this app."
-        )
+        st.error("❌ Missing OPENAI_API_KEY environment variable. " "Please set it in your .env file before running this app.")
         st.stop()
 
     if not os.getenv("POSTGRES_USER"):
@@ -234,10 +229,7 @@ def main():
 
         st.subheader("📊 Time Series Visualization")
         if st.session_state.detection_result:
-            anomalies = [
-                {"index": a.index, "value": a.value}
-                for a in st.session_state.detection_result.anomalies
-            ]
+            anomalies = [{"index": a.index, "value": a.value} for a in st.session_state.detection_result.anomalies]
             fig = plot_time_series(df, anomalies)
         else:
             fig = plot_time_series(df)
@@ -247,11 +239,19 @@ def main():
         # Show detection results if available
         if st.session_state.detection_result:
             report = st.session_state.detection_result
-            
+
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("Anomalies Found", len(report.anomalies))
-            
+            with col2:
+                st.metric("Detector Used", report.detector_used)
+
+            if st.toggle("🔧 Show Tools Used By The Agent"):
+                with st.expander("🛠️ Agent Tool Calls", expanded=True):
+                    for tool in report.tools_called:
+                        prefix = "✅" if tool == report.detector_used else "🔍"
+                        st.markdown(f"{prefix} `{tool}`")
+
             with st.expander("📋 View Summary"):
                 st.text(report.summary)
 
