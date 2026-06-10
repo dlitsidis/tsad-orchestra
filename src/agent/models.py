@@ -11,6 +11,7 @@ class Anomaly(BaseModel):
 
     index: int = Field(..., description="Index of the anomalous value in the series.")
     value: float = Field(..., description="Anomalous value at the index.")
+    score: float = Field(default=0.0, description="Severity score or confidence of the anomaly.")
 
 
 class AnomalyReport(BaseModel):
@@ -19,7 +20,7 @@ class AnomalyReport(BaseModel):
         description="List of detected anomalies.",
     )
     anomaly_count: int = Field(default=0, description="Total number of anomalies detected by the selected detector.")
-    detector_used: str = Field(..., description="Name of the detector selected for the final report.")
+    detectors_used: list[str] = Field(..., description="Names of the detectors whose outputs were aggregated into the final report.")
     tools_called: list[str] = Field(default_factory=list, description="All tool names called during analysis.")
     summary: str = Field(..., description="Summary of anomaly detection results.")
 

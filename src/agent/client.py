@@ -123,8 +123,74 @@ def should_continue(state: AgentState) -> str:
     """Route: keep calling tools or move to finalize."""
     last = state["messages"][-1]
     if getattr(last, "tool_calls", None):
+        detector_calls = [tc for tc in last.tool_calls if tc["name"].endswith("_detector")]
+        
+        previously_run = set()
+        for msg in state["messages"][:-1]:
+            for tc in getattr(msg, "tool_calls", None) or []:
+                if tc["name"].endswith("_detector"):
+                    previously_run.add(tc["name"])
+                    
+        total_unique_detectors = len(previously_run.union(tc["name"] for tc in detector_calls))
+        
+        if total_unique_detectors > 7:
+            return "too_many_tools"
+            
         return "tools"
+    
+    # Check if a detector tool was actually called
+    detector_called = False
+    for msg in state["messages"]:
+        if getattr(msg, "tool_calls", None):
+            for tc in msg.tool_calls:
+                if tc["name"].endswith("_detector"):
+                    detector_called = True
+                    break
+        if detector_called:
+            break
+            
+    if not detector_called:
+        return "force_detector"
+
     return "finalize"
+
+
+async def too_many_tools(state: AgentState) -> dict[str, Any]:
+    """Intercept execution if the agent attempts to run more than 3 detectors cumulatively."""
+    logger.warning("Agent attempted to run >3 detectors. Intercepting.")
+    last = state["messages"][-1]
+    
+    responses = []
+    for tc in last.tool_calls:
+        if tc["name"].endswith("_detector"):
+            responses.append({
+                "role": "tool",
+                "name": tc["name"],
+                "tool_call_id": tc["id"],
+                "content": "SYSTEM REJECTION: You have exceeded the strict limit of 7 anomaly detectors per dataset. Tool execution blocked to save compute. You MUST make your final decision based on the detectors you have already run.",
+            })
+        else:
+            responses.append({
+                "role": "tool",
+                "name": tc["name"],
+                "tool_call_id": tc["id"],
+                "content": "SYSTEM REJECTION: Tool execution blocked because it was batched with an illegal number of anomaly detectors. Try again without the detectors.",
+            })
+        
+    return {"messages": responses}
+
+
+async def force_detector(state: AgentState) -> dict[str, Any]:
+    """Intercept the agent if it tries to stop before using a detector."""
+    logger.warning("Agent tried to finalize without calling a detector. Forcing it to continue.")
+    return {
+        "messages": [
+            {
+                "role": "user",
+                "content": "You have profiled the data but haven't run any anomaly detectors. You MUST call at least one anomaly detector tool (e.g., lof_detector, hbos_detector, iforest_detector, pca_detector, poly_detector) before finishing.",
+            }
+        ]
+    }
 
 
 def _collect_tool_results(messages: list[Any]) -> str:
@@ -157,39 +223,7 @@ async def finalize(state: AgentState, llm: ChatOpenAI) -> dict[str, Any]:
         dict.fromkeys(tc["name"] for msg in state["messages"] if hasattr(msg, "tool_calls") for tc in (msg.tool_calls or []))
     )
 
-    # Parse anomalies directly from tool results — don't trust the LLM to
-    # faithfully copy 1000+ items out of a long context string.
-    raw_anomalies: list[dict] = []
-    last_detector: str = ""
-    for msg in state["messages"]:
-        if getattr(msg, "type", None) == "tool":
-            tool_call_id = getattr(msg, "tool_call_id", "")
-            tool_name = next(
-                (
-                    tc["name"]
-                    for m in state["messages"]
-                    for tc in (getattr(m, "tool_calls", None) or [])
-                    if tc["id"] == tool_call_id
-                ),
-                "",
-            )
-            # Normalise content: LangChain may give a str or a list of blocks
-            content = msg.content
-            if isinstance(content, list):
-                content = " ".join(block.get("text", "") if isinstance(block, dict) else str(block) for block in content)
-            logger.debug("Tool '{}' raw content: {:.300}", tool_name, content)
-            try:
-                payload = json.loads(content)
-                if "anomalies" in payload:
-                    raw_anomalies = payload["anomalies"]
-                    last_detector = tool_name
-                    logger.debug("Parsed {} anomalies from '{}'", len(raw_anomalies), tool_name)
-                else:
-                    logger.debug("Tool '{}' has no 'anomalies' key. Keys: {}", tool_name, list(payload.keys()))
-            except (json.JSONDecodeError, TypeError) as e:
-                logger.debug("Tool '{}' content not JSON: {}", tool_name, e)
-
-    # Let the LLM only fill in summary + detector_used (small, safe task)
+    # Let the LLM populate the consolidated AnomalyReport based on its ensemble reasoning
     structured = cast(
         AnomalyReport,
         await _invoke_with_backoff(
@@ -198,27 +232,24 @@ async def finalize(state: AgentState, llm: ChatOpenAI) -> dict[str, Any]:
                 {
                     "role": "user",
                     "content": (
-                        f"Given these detector outputs, write a concise summary and identify "
-                        f"the single detector whose results are being reported.\n\n{context}\n\n"
-                        f"For 'detector_used', set ONLY the one detector that produced the final anomaly list. "
-                        f"Leave 'anomalies' as an empty list — it will be filled separately."
+                        f"Given these detector outputs, act as an ensemble judge and determine the final list of true anomalies.\n\n{context}\n\n"
+                        f"For 'detectors_used', list all the detectors you chose to run.\n"
+                        f"For 'anomalies', extract and list the exact index, value, and severity score for each point you decide is a true anomaly based on consensus or strong signals.\n"
+                        f"For 'summary', explain your logic and why you selected these points."
                     ),
                 }
             ],
         ),
     )
 
-    # Overwrite with the directly parsed values — no LLM hallucination risk
-    structured.anomalies = [Anomaly(**a) for a in raw_anomalies]
-    structured.detector_used = last_detector or structured.detector_used
     structured.tools_called = tools_called
     structured.anomaly_count = len(structured.anomalies)
 
     logger.info(
-        "Primary agent produced report (iteration {}): {} anomalies from {}",
+        "Primary agent produced report (iteration {}): {} anomalies from ensemble {}",
         state["iteration"] + 1,
         len(structured.anomalies),
-        structured.detector_used,
+        structured.detectors_used,
     )
     return {"result": structured, "messages": []}
 
@@ -234,9 +265,12 @@ async def validate(state: AgentState, llm: ChatOpenAI) -> dict[str, Any]:
     if report is None:
         return {"critique": "No report was produced.", "iteration": state["iteration"] + 1}
 
+    context = _collect_tool_results(state["messages"])
+
     user_msg = VALIDATOR_USER_PROMPT.format(
         series_id=state["series_id"],
         iteration=state["iteration"] + 1,
+        context=context,
         report_json=report.model_dump_json(indent=2),
     )
 
@@ -302,6 +336,8 @@ def build_graph(llm_with_tools: Any, tool_node: ToolNode, llm: ChatOpenAI) -> An
 
     builder.add_node("primary_agent", functools.partial(call_model, llm_with_tools=llm_with_tools))
     builder.add_node("tools", tool_node)
+    builder.add_node("too_many_tools", too_many_tools)
+    builder.add_node("force_detector", force_detector)
     builder.add_node("finalize", functools.partial(finalize, llm=llm))
     builder.add_node("validator", functools.partial(validate, llm=llm))
 
@@ -310,9 +346,11 @@ def build_graph(llm_with_tools: Any, tool_node: ToolNode, llm: ChatOpenAI) -> An
     builder.add_conditional_edges(
         "primary_agent",
         should_continue,
-        {"tools": "tools", "finalize": "finalize"},
+        {"tools": "tools", "too_many_tools": "too_many_tools", "force_detector": "force_detector", "finalize": "finalize"},
     )
     builder.add_edge("tools", "primary_agent")
+    builder.add_edge("too_many_tools", "primary_agent")
+    builder.add_edge("force_detector", "primary_agent")
     builder.add_edge("finalize", "validator")
 
     builder.add_conditional_edges(

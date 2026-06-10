@@ -16,6 +16,47 @@ from src.utils.db import execute_query, get_time_series_name, list_tables, read_
 mcp = FastMCP("tsad-orchestra")
 
 
+def _windowed_top_k_anomalies(
+    series: np.ndarray | list,
+    predictions: np.ndarray,
+    scores: np.ndarray,
+    window_size: int = 50,
+    top_k: int = 100,
+) -> tuple[list[Anomaly], int, int]:
+    """Extract top-k anomalies using tumbling windows to reduce density.
+    Returns: (anomalies, total_raw_flagged_points, total_windows_found)
+    """
+    n = len(series)
+    windows = []
+    total_flagged = 0
+    
+    for start in range(0, n, window_size):
+        end = min(start + window_size, n)
+        
+        window_indices = [i for i in range(start, end) if predictions[i] == 1]
+        
+        if window_indices:
+            total_flagged += len(window_indices)
+            best_idx = max(window_indices, key=lambda i: scores[i])
+            windows.append({
+                "index": int(best_idx),
+                "value": float(series[best_idx]),
+                "score": float(scores[best_idx]),
+            })
+            
+    total_windows = len(windows)
+    
+    windows.sort(key=lambda w: w["score"], reverse=True)
+    top_windows = windows[:top_k]
+    top_windows.sort(key=lambda w: w["index"])
+    
+    anomalies = [
+        Anomaly(index=w["index"], value=w["value"], score=w["score"])
+        for w in top_windows
+    ]
+    return anomalies, total_flagged, total_windows
+
+
 @mcp.tool()  # type: ignore[untyped-decorator]
 def profile_time_series(
     name: str,
@@ -181,20 +222,15 @@ def lof_detector(
     array = np.array(series).reshape(-1, 1)
     model = LOF(n_neighbors=20)
     predictions = model.fit_predict(array)
+    scores = model.decision_scores_
 
-    anomalies = [
-        Anomaly(
-            index=int(i),
-            value=float(series[i]),
-            reason="LOF anomaly: local outlier factor detected.",
-        )
-        for i in range(len(series))
-        if predictions[i] == 1
-    ]
+    anomalies, total_flagged, total_windows = _windowed_top_k_anomalies(
+        series=series, predictions=predictions, scores=scores
+    )
 
     return DetectionStubResult(
         anomalies=anomalies,
-        notes=f"LOF detector ({name}): found {len(anomalies)} anomalies.",
+        notes=f"LOF detector ({name}): flagged {total_flagged} points across {total_windows} windows. Returning top {len(anomalies)} most severe window peaks.",
     )
 
 
@@ -246,20 +282,15 @@ def hbos_detector(
     array = np.array(series).reshape(-1, 1)
     model = HBOS()
     predictions = model.fit_predict(array)
+    scores = model.decision_scores_
 
-    anomalies = [
-        Anomaly(
-            index=int(i),
-            value=float(series[i]),
-            reason="HBOS anomaly: histogram-based outlier detected.",
-        )
-        for i in range(len(series))
-        if predictions[i] == 1
-    ]
+    anomalies, total_flagged, total_windows = _windowed_top_k_anomalies(
+        series=series, predictions=predictions, scores=scores
+    )
 
     return DetectionStubResult(
         anomalies=anomalies,
-        notes=f"HBOS detector ({name}): found {len(anomalies)} anomalies.",
+        notes=f"HBOS detector ({name}): flagged {total_flagged} points across {total_windows} windows. Returning top {len(anomalies)} most severe window peaks.",
     )
 
 
@@ -312,20 +343,15 @@ def iforest_detector(
     array = np.array(series).reshape(-1, 1)
     model = IForest()
     predictions = model.fit_predict(array)
+    scores = model.decision_scores_
 
-    anomalies = [
-        Anomaly(
-            index=int(i),
-            value=float(series[i]),
-            reason="IForest anomaly: isolation forest detected.",
-        )
-        for i in range(len(series))
-        if predictions[i] == 1
-    ]
+    anomalies, total_flagged, total_windows = _windowed_top_k_anomalies(
+        series=series, predictions=predictions, scores=scores
+    )
 
     return DetectionStubResult(
         anomalies=anomalies,
-        notes=f"IForest detector ({name}): found {len(anomalies)} anomalies.",
+        notes=f"IForest detector ({name}): flagged {total_flagged} points across {total_windows} windows. Returning top {len(anomalies)} most severe window peaks.",
     )
 
 
@@ -380,20 +406,15 @@ def pca_detector(
     array = np.array(series).reshape(-1, 1)
     model = PCA()
     predictions = model.fit_predict(array)
-
-    anomalies = [
-        Anomaly(
-            index=int(i),
-            value=float(series[i]),
-            reason="PCA anomaly: high reconstruction error detected.",
-        )
-        for i in range(len(series))
-        if predictions[i] == 1
-    ]
+    scores = model.decision_scores_
+    
+    anomalies, total_flagged, total_windows = _windowed_top_k_anomalies(
+        series=series, predictions=predictions, scores=scores
+    )
 
     return DetectionStubResult(
         anomalies=anomalies,
-        notes=f"PCA detector ({name}): found {len(anomalies)} anomalies.",
+        notes=f"PCA detector ({name}): flagged {total_flagged} points across {total_windows} windows. Returning top {len(anomalies)} most severe window peaks.",
     )
 
 
@@ -454,19 +475,15 @@ def poly_detector(
     residuals = np.abs(array - prediction)
 
     threshold = np.percentile(residuals, threshold_percentile)
-    anomalies = [
-        Anomaly(
-            index=int(i),
-            value=float(series[i]),
-            reason=f"Poly anomaly: residual {residuals[i]:.2f} exceeds threshold {threshold:.2f}.",
-        )
-        for i in range(len(series))
-        if residuals[i] >= threshold
-    ]
+    predictions = (residuals >= threshold).astype(int)
+
+    anomalies, total_flagged, total_windows = _windowed_top_k_anomalies(
+        series=series, predictions=predictions, scores=residuals
+    )
 
     return DetectionStubResult(
         anomalies=anomalies,
-        notes=f"Poly detector ({name}): found {len(anomalies)} anomalies (threshold={threshold:.2f}).",
+        notes=f"Poly detector ({name}): flagged {total_flagged} points across {total_windows} windows (threshold={threshold:.2f}). Returning top {len(anomalies)} most severe window peaks.",
     )
 
 

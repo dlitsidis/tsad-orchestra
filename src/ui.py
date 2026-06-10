@@ -244,12 +244,12 @@ def main():
             with col1:
                 st.metric("Anomalies Found", len(report.anomalies))
             with col2:
-                st.metric("Detector Used", report.detector_used)
+                st.metric("Detectors Used", ", ".join(report.detectors_used))
 
             if st.toggle("🔧 Show Tools Used By The Agent"):
                 with st.expander("🛠️ Agent Tool Calls", expanded=True):
                     for tool in report.tools_called:
-                        prefix = "✅" if tool == report.detector_used else "🔍"
+                        prefix = "✅" if tool in report.detectors_used else "🔍"
                         st.markdown(f"{prefix} `{tool}`")
 
             with st.expander("📋 View Summary"):
@@ -262,6 +262,7 @@ def main():
                             {
                                 "Index": a.index,
                                 "Value": f"{a.value:.4f}",
+                                "Score": f"{a.score:.2f}",
                             }
                             for a in report.anomalies
                         ]

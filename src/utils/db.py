@@ -82,6 +82,49 @@ def read_time_series(
         raise Exception(f"Failed to read time series from TimescaleDB: {e}") from e
 
 
+def read_time_series_full(
+    table_name: str,
+    time_column: str = "time",
+) -> pd.DataFrame:
+    """Read all columns of a time series from TimescaleDB.
+
+    Args:
+        table_name: Name of the hypertable or regular table in TimescaleDB.
+        time_column: Name of the time column (default: 'time').
+
+    Returns:
+        DataFrame with time series data sorted by time, including all columns.
+
+    Raises:
+        ValueError: If database connection fails or query is invalid.
+        Exception: If table does not exist or other database errors occur.
+    """
+    try:
+        db_url = get_db_url()
+        engine = create_engine(db_url)
+
+        # Build the query with quoted table name (handles table names starting with numbers)
+        query = f'SELECT * FROM "{table_name}"'
+
+        query += f" ORDER BY {time_column} ASC"
+
+        # Execute query and read into DataFrame
+        with engine.connect() as connection:
+            df = pd.read_sql(text(query), connection)
+
+        if df.empty:
+            raise ValueError(
+                f"No data found in table '{table_name}' with query: {query}"
+            )
+
+        return df
+
+    except ValueError as e:
+        raise ValueError(f"Database configuration error: {e}") from e
+    except Exception as e:
+        raise Exception(f"Failed to read full time series from TimescaleDB: {e}") from e
+
+
 def read_time_series_by_id(
     series_id: str,
     time_column: str = "time",
