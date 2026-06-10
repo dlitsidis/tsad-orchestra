@@ -8,6 +8,7 @@ from src.benchmark.configurations import RANDOM_SEED, SUBSET_SIZE
 from src.utils.db import list_tables, read_time_series_full, get_db_url
 from src.agent.client import run as run_agent
 from src.benchmark.run_baselines import calculate_metrics
+from TSB_UAD.utils.slidingWindows import find_length
 
 async def main():
     random.seed(RANDOM_SEED)
@@ -25,11 +26,21 @@ async def main():
                 id SERIAL PRIMARY KEY,
                 dataset_name VARCHAR(255),
                 method VARCHAR(255),
-                precision FLOAT,
-                recall FLOAT,
-                f1_score FLOAT,
                 auc_roc FLOAT,
                 auc_pr FLOAT,
+                precision FLOAT,
+                recall FLOAT,
+                f FLOAT,
+                precision_at_k FLOAT,
+                rprecision FLOAT,
+                rrecall FLOAT,
+                rf FLOAT,
+                r_auc_roc FLOAT,
+                r_auc_pr FLOAT,
+                vus_roc FLOAT,
+                vus_pr FLOAT,
+                affiliation_precision FLOAT,
+                affiliation_recall FLOAT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
@@ -52,23 +63,43 @@ async def main():
             
             for anom in report.anomalies:
                 if 0 <= anom.index < n:
-                    y_pred[anom.index] = 1
                     y_score[anom.index] = anom.score
                     
-            p, r, f1, roc, pr = calculate_metrics(y_true, y_pred, y_score)
+            data = df.iloc[:,1].astype(float)
+            slidingWindow = find_length(data)
+            
+            metrics = calculate_metrics(y_true, y_score, slidingWindow)
             
             with engine.begin() as conn:
                 conn.execute(text("""
-                    INSERT INTO experiments (dataset_name, method, precision, recall, f1_score, auc_roc, auc_pr)
-                    VALUES (:dataset, :method, :p, :r, :f1, :roc, :pr)
+                    INSERT INTO experiments (
+                        dataset_name, method, auc_roc, auc_pr, precision, recall, f, 
+                        precision_at_k, rprecision, rrecall, rf, r_auc_roc, r_auc_pr, 
+                        vus_roc, vus_pr, affiliation_precision, affiliation_recall
+                    )
+                    VALUES (
+                        :dataset, :method, :auc_roc, :auc_pr, :precision, :recall, :f, 
+                        :precision_at_k, :rprecision, :rrecall, :rf, :r_auc_roc, :r_auc_pr, 
+                        :vus_roc, :vus_pr, :affiliation_precision, :affiliation_recall
+                    )
                 """), {
                     "dataset": table,
                     "method": "agentic",
-                    "p": p,
-                    "r": r,
-                    "f1": f1,
-                    "roc": roc,
-                    "pr": pr
+                    "auc_roc": metrics.get("AUC_ROC"),
+                    "auc_pr": metrics.get("AUC_PR"),
+                    "precision": metrics.get("Precision"),
+                    "recall": metrics.get("Recall"),
+                    "f": metrics.get("F"),
+                    "precision_at_k": metrics.get("Precision_at_k"),
+                    "rprecision": metrics.get("Rprecision"),
+                    "rrecall": metrics.get("Rrecall"),
+                    "rf": metrics.get("RF"),
+                    "r_auc_roc": metrics.get("R_AUC_ROC"),
+                    "r_auc_pr": metrics.get("R_AUC_PR"),
+                    "vus_roc": metrics.get("VUS_ROC"),
+                    "vus_pr": metrics.get("VUS_PR"),
+                    "affiliation_precision": metrics.get("Affiliation_Precision"),
+                    "affiliation_recall": metrics.get("Affiliation_Recall")
                 })
         except Exception as e:
             print(f"Failed on {table}: {e}")

@@ -1,39 +1,29 @@
-import os
-import sys
 import random
 import numpy as np
-import pandas as pd
 from sqlalchemy import create_engine, text
-from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score, average_precision_score
 
 from src.benchmark.configurations import RANDOM_SEED, SUBSET_SIZE
 from src.utils.db import list_tables, read_time_series_full, get_db_url
 from src.mcp_server import lof_detector, hbos_detector, iforest_detector, pca_detector, poly_detector
+from TSB_UAD.utils.slidingWindows import find_length
+from TSB_UAD.vus.metrics import get_metrics
 
-def calculate_metrics(y_true, y_pred, y_score=None):
-    precision = precision_score(y_true, y_pred, zero_division=0)
-    recall = recall_score(y_true, y_pred, zero_division=0)
-    f1 = f1_score(y_true, y_pred, zero_division=0)
-    
-    auc_roc = 0.0
-    auc_pr = 0.0
-    
-    if len(set(y_true)) > 1:
-        score_to_use = y_score if y_score is not None else y_pred
-        auc_roc = roc_auc_score(y_true, score_to_use)
-        auc_pr = average_precision_score(y_true, score_to_use)
-        
-    return float(precision), float(recall), float(f1), float(auc_roc), float(auc_pr)
+def calculate_metrics(y_true, y_score, sliding_window):
+    metrics = get_metrics(score=y_score, labels=y_true, slidingWindow=sliding_window)
+    # Convert numpy types to float for db insertion
+    return {k: float(v) for k, v in metrics.items()}
 
 def main():
     random.seed(RANDOM_SEED)
     
     tables = list_tables()
     ts_tables = [t for t in tables if t != 'experiments']
-    
+
     if len(ts_tables) > SUBSET_SIZE:
         ts_tables = random.sample(ts_tables, SUBSET_SIZE)
-        
+
+    ts_tables = ['545_smap_id_15_sensor_tr_1173_1st_2750']      
+    
     engine = create_engine(get_db_url())
     with engine.begin() as conn:
         conn.execute(text("""
@@ -41,11 +31,21 @@ def main():
                 id SERIAL PRIMARY KEY,
                 dataset_name VARCHAR(255),
                 method VARCHAR(255),
-                precision FLOAT,
-                recall FLOAT,
-                f1_score FLOAT,
                 auc_roc FLOAT,
                 auc_pr FLOAT,
+                precision FLOAT,
+                recall FLOAT,
+                f FLOAT,
+                precision_at_k FLOAT,
+                rprecision FLOAT,
+                rrecall FLOAT,
+                rf FLOAT,
+                r_auc_roc FLOAT,
+                r_auc_pr FLOAT,
+                vus_roc FLOAT,
+                vus_pr FLOAT,
+                affiliation_precision FLOAT,
+                affiliation_recall FLOAT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
@@ -61,40 +61,51 @@ def main():
     for table in ts_tables:
         print(f"Benchmarking table: {table}")
         df = read_time_series_full(table)
-        if 'label' not in df.columns:
-            print(f"Skipping {table}: no 'label' column")
-            continue
-            
+
+        data = df.iloc[:,1].astype(float)
+        
+        slidingWindow = find_length(data)
+
         y_true = df['label'].fillna(0).astype(int).values
         n = len(y_true)
         
         for name, func in detectors.items():
             print(f"  Running {name}...")
             try:
-                result = func(table)
+                y_score = func(table, _return_raw=True)
                 
-                y_pred = np.zeros(n, dtype=int)
-                y_score = np.zeros(n, dtype=float)
-                
-                for anom in result.anomalies:
-                    if 0 <= anom.index < n:
-                        y_pred[anom.index] = 1
-                        y_score[anom.index] = anom.score
-                        
-                p, r, f1, roc, pr = calculate_metrics(y_true, y_pred, y_score)
+                metrics = calculate_metrics(y_true, y_score, slidingWindow)
                 
                 with engine.begin() as conn:
                     conn.execute(text("""
-                        INSERT INTO experiments (dataset_name, method, precision, recall, f1_score, auc_roc, auc_pr)
-                        VALUES (:dataset, :method, :p, :r, :f1, :roc, :pr)
+                        INSERT INTO experiments (
+                            dataset_name, method, auc_roc, auc_pr, precision, recall, f, 
+                            precision_at_k, rprecision, rrecall, rf, r_auc_roc, r_auc_pr, 
+                            vus_roc, vus_pr, affiliation_precision, affiliation_recall
+                        )
+                        VALUES (
+                            :dataset, :method, :auc_roc, :auc_pr, :precision, :recall, :f, 
+                            :precision_at_k, :rprecision, :rrecall, :rf, :r_auc_roc, :r_auc_pr, 
+                            :vus_roc, :vus_pr, :affiliation_precision, :affiliation_recall
+                        )
                     """), {
                         "dataset": table,
                         "method": name,
-                        "p": p,
-                        "r": r,
-                        "f1": f1,
-                        "roc": roc,
-                        "pr": pr
+                        "auc_roc": metrics.get("AUC_ROC"),
+                        "auc_pr": metrics.get("AUC_PR"),
+                        "precision": metrics.get("Precision"),
+                        "recall": metrics.get("Recall"),
+                        "f": metrics.get("F"),
+                        "precision_at_k": metrics.get("Precision_at_k"),
+                        "rprecision": metrics.get("Rprecision"),
+                        "rrecall": metrics.get("Rrecall"),
+                        "rf": metrics.get("RF"),
+                        "r_auc_roc": metrics.get("R_AUC_ROC"),
+                        "r_auc_pr": metrics.get("R_AUC_PR"),
+                        "vus_roc": metrics.get("VUS_ROC"),
+                        "vus_pr": metrics.get("VUS_PR"),
+                        "affiliation_precision": metrics.get("Affiliation_Precision"),
+                        "affiliation_recall": metrics.get("Affiliation_Recall")
                     })
             except Exception as e:
                 print(f"    Failed {name} on {table}: {e}")

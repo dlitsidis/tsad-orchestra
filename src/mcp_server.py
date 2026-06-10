@@ -1,14 +1,11 @@
 """FastMCP server module for TSAD Orchestra tool discovery."""
 
 from __future__ import annotations
+import math
 
 import numpy as np
 import pandas as pd
 from fastmcp import FastMCP
-from pyod.models.hbos import HBOS
-from pyod.models.iforest import IForest
-from pyod.models.lof import LOF
-from pyod.models.pca import PCA
 
 from src.agent.models import Anomaly, DetectionStubResult, TimeSeriesProfile
 from src.utils.db import execute_query, get_time_series_name, list_tables, read_time_series, read_time_series_by_id
@@ -172,7 +169,8 @@ def list_time_series() -> dict:
 @mcp.tool()  # type: ignore[untyped-decorator]
 def lof_detector(
     name: str,
-) -> DetectionStubResult:
+    _return_raw: bool = False,
+) -> DetectionStubResult | np.ndarray:
     """Detect anomalies using Local Outlier Factor (LOF).
 
     Best for identifying local anomalies in time series with non-uniform or varying densities.
@@ -192,6 +190,11 @@ def lof_detector(
     Returns:
         DetectionStubResult: Detected anomalies with indices and reasons.
     """
+    from TSB_UAD.models.lof import LOF
+    from TSB_UAD.utils.slidingWindows import find_length
+    from TSB_UAD.models.feature import Window
+    from sklearn.preprocessing import MinMaxScaler
+
     try:
         if name.isdigit():
             df = read_time_series_by_id(name)
@@ -218,14 +221,21 @@ def lof_detector(
             anomalies=[],
             notes="LOF detector: insufficient data (need at least 20 points).",
         )
+    
+    sliding_window = find_length(series)
+    X_data = Window(window = sliding_window).convert(series).to_numpy()
 
-    array = np.array(series).reshape(-1, 1)
-    model = LOF(n_neighbors=20)
-    predictions = model.fit_predict(array)
-    scores = model.decision_scores_
+    model = LOF(n_neighbors=20, n_jobs=-1)
+    model.fit(X_data)
+    raw_scores = model.decision_scores_
+    scores = MinMaxScaler(feature_range=(0,1)).fit_transform(raw_scores.reshape(-1,1)).ravel()
+    scores = np.array([scores[0]]*math.ceil((sliding_window-1)/2) + list(scores) + [scores[-1]]*((sliding_window-1)//2))
+
+    if _return_raw:
+        return scores
 
     anomalies, total_flagged, total_windows = _windowed_top_k_anomalies(
-        series=series, predictions=predictions, scores=scores
+        series=series, predictions=scores, scores=scores
     )
 
     return DetectionStubResult(
@@ -237,7 +247,8 @@ def lof_detector(
 @mcp.tool()  # type: ignore[untyped-decorator]
 def hbos_detector(
     name: str,
-) -> DetectionStubResult:
+    _return_raw: bool = False,
+) -> DetectionStubResult | np.ndarray:
     """Detect anomalies using Histogram-based Outlier Score (HBOS).
 
     Best for identifying global outliers by modelling the marginal distribution of the
@@ -257,6 +268,11 @@ def hbos_detector(
     Returns:
         DetectionStubResult: Detected anomalies with indices and reasons.
     """
+    from TSB_UAD.models.hbos import HBOS
+    from TSB_UAD.utils.slidingWindows import find_length
+    from TSB_UAD.models.feature import Window
+    from sklearn.preprocessing import MinMaxScaler
+
     try:
         if name.isdigit():
             df = read_time_series_by_id(name)
@@ -279,13 +295,22 @@ def hbos_detector(
             notes=f"HBOS detector: Error loading series '{name}': {e}",
         )
 
-    array = np.array(series).reshape(-1, 1)
-    model = HBOS()
-    predictions = model.fit_predict(array)
-    scores = model.decision_scores_
+    sliding_window = find_length(series)
+    X_data = Window(window = sliding_window).convert(series).to_numpy()
+
+    model = HBOS(alpha=np.float64(0.1), tol=np.float64(0.5), contamination=np.float64(0.1))
+    model.fit(X_data)
+    raw_scores = model.decision_scores_
+    
+    # Post-processing
+    scores = MinMaxScaler(feature_range=(0,1)).fit_transform(raw_scores.reshape(-1,1)).ravel()
+    scores = np.array([scores[0]]*math.ceil((sliding_window-1)/2) + list(scores) + [scores[-1]]*((sliding_window-1)//2))
+
+    if _return_raw:
+        return scores
 
     anomalies, total_flagged, total_windows = _windowed_top_k_anomalies(
-        series=series, predictions=predictions, scores=scores
+        series=series, predictions=scores, scores=scores
     )
 
     return DetectionStubResult(
@@ -297,7 +322,8 @@ def hbos_detector(
 @mcp.tool()  # type: ignore[untyped-decorator]
 def iforest_detector(
     name: str,
-) -> DetectionStubResult:
+    _return_raw: bool = False,
+) -> DetectionStubResult | np.ndarray:
     """Detect anomalies using Isolation Forest (IForest).
 
     Best for general-purpose anomaly detection where anomalies are assumed to be
@@ -318,6 +344,11 @@ def iforest_detector(
     Returns:
         DetectionStubResult: Detected anomalies with indices and reasons.
     """
+    from TSB_UAD.models.iforest import IForest
+    from TSB_UAD.utils.slidingWindows import find_length
+    from TSB_UAD.models.feature import Window
+    from sklearn.preprocessing import MinMaxScaler
+
     try:
         if name.isdigit():
             df = read_time_series_by_id(name)
@@ -340,13 +371,22 @@ def iforest_detector(
             notes=f"IForest detector: Error loading series '{name}': {e}",
         )
 
-    array = np.array(series).reshape(-1, 1)
-    model = IForest()
-    predictions = model.fit_predict(array)
-    scores = model.decision_scores_
+    sliding_window = find_length(series)
+    X_data = Window(window = sliding_window).convert(series).to_numpy()
+
+    model = IForest(n_jobs=1)
+    model.fit(X_data)
+    raw_scores = model.decision_scores_
+    
+    # Post-processing
+    scores = MinMaxScaler(feature_range=(0,1)).fit_transform(raw_scores.reshape(-1,1)).ravel()
+    scores = np.array([scores[0]]*math.ceil((sliding_window-1)/2) + list(scores) + [scores[-1]]*((sliding_window-1)//2))
+
+    if _return_raw:
+        return scores
 
     anomalies, total_flagged, total_windows = _windowed_top_k_anomalies(
-        series=series, predictions=predictions, scores=scores
+        series=series, predictions=scores, scores=scores
     )
 
     return DetectionStubResult(
@@ -358,7 +398,8 @@ def iforest_detector(
 @mcp.tool()  # type: ignore[untyped-decorator]
 def pca_detector(
     name: str,
-) -> DetectionStubResult:
+    _return_raw: bool = False,
+) -> DetectionStubResult | np.ndarray:
     """Detect anomalies using Principal Component Analysis (PCA).
 
     Best for detecting anomalies that break the dominant linear structure of the data.
@@ -381,6 +422,11 @@ def pca_detector(
     Returns:
         DetectionStubResult: Detected anomalies with indices and reasons.
     """
+    from TSB_UAD.models.pca import PCA
+    from TSB_UAD.utils.slidingWindows import find_length
+    from TSB_UAD.models.feature import Window
+    from sklearn.preprocessing import MinMaxScaler
+
     try:
         if name.isdigit():
             df = read_time_series_by_id(name)
@@ -403,13 +449,22 @@ def pca_detector(
             notes=f"PCA detector: Error loading series '{name}': {e}",
         )
 
-    array = np.array(series).reshape(-1, 1)
+    sliding_window = find_length(series)
+    X_data = Window(window = sliding_window).convert(series).to_numpy()
+
     model = PCA()
-    predictions = model.fit_predict(array)
-    scores = model.decision_scores_
-    
+    model.fit(X_data)
+    raw_scores = model.decision_scores_
+
+    # Post-processing
+    scores = MinMaxScaler(feature_range=(0,1)).fit_transform(raw_scores.reshape(-1,1)).ravel()
+    scores = np.array([scores[0]]*math.ceil((sliding_window-1)/2) + list(scores) + [scores[-1]]*((sliding_window-1)//2))
+
+    if _return_raw:
+        return scores
+
     anomalies, total_flagged, total_windows = _windowed_top_k_anomalies(
-        series=series, predictions=predictions, scores=scores
+        series=series, predictions=scores, scores=scores
     )
 
     return DetectionStubResult(
@@ -421,9 +476,9 @@ def pca_detector(
 @mcp.tool()  # type: ignore[untyped-decorator]
 def poly_detector(
     name: str,
-    threshold_percentile: float = 90.0,
-) -> DetectionStubResult:
-    """Detect anomalies using Polynomial Fitting.
+    _return_raw: bool = False,
+) -> DetectionStubResult | np.ndarray:
+    """Detect anomalies using Polynomial Approximation (POLY).
 
     Best for detecting point anomalies and contextual anomalies in non-stationary
     data that exhibits a smooth global trend. Fits a degree-3 polynomial to the
@@ -446,6 +501,11 @@ def poly_detector(
     Returns:
         DetectionStubResult: Detected anomalies with indices and reasons.
     """
+    from TSB_UAD.models.poly import POLY
+    from TSB_UAD.utils.slidingWindows import find_length
+    from sklearn.preprocessing import MinMaxScaler
+    from TSB_UAD.models.distance import Fourier
+
     try:
         if name.isdigit():
             df = read_time_series_by_id(name)
@@ -457,7 +517,7 @@ def poly_detector(
             if df.empty:
                 return DetectionStubResult(
                     anomalies=[],
-                    notes=f"Poly detector: No data found for series '{name}'.",
+                    notes=f"PCA detector: No data found for series '{name}'.",
                 )
             series = df.iloc[:, 1].values
         else:
@@ -465,27 +525,34 @@ def poly_detector(
     except ValueError as e:
         return DetectionStubResult(
             anomalies=[],
-            notes=f"Poly detector: Error loading series '{name}': {e}",
+            notes=f"PCA detector: Error loading series '{name}': {e}",
         )
 
-    array = np.array(series)
-    x = np.arange(len(series))
-    coeffs = np.polyfit(x, array, deg=3)
-    prediction = np.polyval(coeffs, x)
-    residuals = np.abs(array - prediction)
+    sliding_window = find_length(series)
 
-    threshold = np.percentile(residuals, threshold_percentile)
-    predictions = (residuals >= threshold).astype(int)
+    model = POLY(power=3, window=sliding_window)
+    model.fit(series)
+
+    measure = Fourier()
+    measure.detector = model
+    measure.set_param()
+    model.decision_function(measure=measure)
+    score = model.decision_scores_
+
+    # Post-processing
+    scores = MinMaxScaler(feature_range=(0,1)).fit_transform(score.reshape(-1,1)).ravel()
+    
+    if _return_raw:
+        return scores
 
     anomalies, total_flagged, total_windows = _windowed_top_k_anomalies(
-        series=series, predictions=predictions, scores=residuals
+        series=series, predictions=scores, scores=scores
     )
 
     return DetectionStubResult(
         anomalies=anomalies,
-        notes=f"Poly detector ({name}): flagged {total_flagged} points across {total_windows} windows (threshold={threshold:.2f}). Returning top {len(anomalies)} most severe window peaks.",
+        notes=f"PCA detector ({name}): flagged {total_flagged} points across {total_windows} windows. Returning top {len(anomalies)} most severe window peaks.",
     )
-
 
 def main() -> None:
     """Run the MCP server over stdio."""
