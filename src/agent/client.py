@@ -355,9 +355,9 @@ async def validate(state: AgentState, llm: ChatOpenAI) -> dict[str, Any]:
     # 1. Deterministic Rule Checks (prevents LLM counting hallucinations)
     tools_called = list(
         dict.fromkeys(
-            tc["name"] 
-            for msg in state["messages"] 
-            if getattr(msg, "tool_calls", None) 
+            tc["name"]
+            for msg in state["messages"]
+            if getattr(msg, "tool_calls", None)
             for tc in getattr(msg, "tool_calls", [])
         )
     )
@@ -427,10 +427,16 @@ def route_after_validator(state: AgentState) -> str:
 
 
 
-def build_graph(llm_with_tools: Any, tool_node: ToolNode, llm: ChatOpenAI) -> Any:
-    """Assemble and compile the dual-agent LangGraph.
+def build_graph(
+    llm_with_tools: Any,
+    tool_node: ToolNode,
+    llm: ChatOpenAI,
+    *,
+    skip_validator: bool = False,
+) -> Any:
+    """Assemble and compile the LangGraph.
 
-    Graph shape:
+    When *skip_validator* is False (default), the full dual-agent graph is used:
 
         primary_agent → tools → primary_agent → ... → finalize
                                                             ↓
@@ -438,6 +444,11 @@ def build_graph(llm_with_tools: Any, tool_node: ToolNode, llm: ChatOpenAI) -> An
                                                             ↓
                                            ┌── accepted / max retries → END
                                            └── rejected ──────────────→ primary_agent
+
+    When *skip_validator* is True (ablation mode), the validator is removed
+    and finalize connects directly to END:
+
+        primary_agent → tools → primary_agent → ... → finalize → END
     """
     builder = StateGraph(AgentState)
 
@@ -446,7 +457,6 @@ def build_graph(llm_with_tools: Any, tool_node: ToolNode, llm: ChatOpenAI) -> An
     builder.add_node("too_many_tools", too_many_tools)
     builder.add_node("force_detector", force_detector)
     builder.add_node("finalize", functools.partial(finalize, llm=llm))
-    builder.add_node("validator", functools.partial(validate, llm=llm))
 
     builder.set_entry_point("primary_agent")
 
@@ -458,21 +468,31 @@ def build_graph(llm_with_tools: Any, tool_node: ToolNode, llm: ChatOpenAI) -> An
     builder.add_edge("tools", "primary_agent")
     builder.add_edge("too_many_tools", "primary_agent")
     builder.add_edge("force_detector", "primary_agent")
-    builder.add_edge("finalize", "validator")
 
-    builder.add_conditional_edges(
-        "validator",
-        route_after_validator,
-        {"end": END, "retry": "primary_agent"},
-    )
+    if skip_validator:
+        builder.add_edge("finalize", END)
+    else:
+        builder.add_node("validator", functools.partial(validate, llm=llm))
+        builder.add_edge("finalize", "validator")
+        builder.add_conditional_edges(
+            "validator",
+            route_after_validator,
+            {"end": END, "retry": "primary_agent"},
+        )
 
     return builder.compile()
 
 
 
 
-async def run(series_id: str) -> AnomalyReport:
-    """Run the dual-agent TSAD pipeline and return the final AnomalyReport."""
+async def run(series_id: str, *, skip_validator: bool = False) -> AnomalyReport:
+    """Run the TSAD pipeline and return the final AnomalyReport.
+
+    Args:
+        series_id: Identifier for the time series to analyse.
+        skip_validator: If True, skip the validator/refinement agent
+            (single-agent ablation mode).
+    """
     server_params = default_mcp_server_params()
 
     async with stdio_client(server_params) as (read, write):
@@ -489,7 +509,7 @@ async def run(series_id: str) -> AnomalyReport:
             llm_with_tools = llm.bind_tools(tools)
             tool_node = ToolNode(tools)
 
-            graph = build_graph(llm_with_tools, tool_node, llm)
+            graph = build_graph(llm_with_tools, tool_node, llm, skip_validator=skip_validator)
 
             final_state = cast(
                 AgentState,

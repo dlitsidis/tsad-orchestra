@@ -689,7 +689,11 @@ def store_ensemble_scores(
     which detectors to include in the ensemble.  It:
       1. Retrieves the already-computed raw score arrays from the server cache
          (no re-running of detectors).
-      2. Mean-fuses the arrays into a single [0, 1] score vector.
+      2. Quality-weighted fuses the arrays into a single [0, 1] score vector.
+         Each detector is weighted by its *signal concentration*: the fraction
+         of total score mass held by the top-1% of points.  Informative detectors
+         (sharp spikes at anomaly locations) receive high weight; flat/uninformative
+         detectors receive near-zero weight automatically.
       3. Writes the vector to a temporary file keyed by series name.
       4. Returns a lightweight confirmation (NOT the full score array).
 
@@ -698,10 +702,11 @@ def store_ensemble_scores(
         detectors: Short names of detectors to fuse, e.g. ["iforest", "lof"].
 
     Returns:
-        dict with status, n_points, and the temp file path.
+        dict with status, n_points, detector weights, and the temp file path.
     """
     _VALID = {"lof", "hbos", "iforest", "pca", "poly"}
     score_arrays: list[np.ndarray] = []
+    detector_names: list[str] = []
     failed: list[str] = []
 
     for raw_name in detectors:
@@ -714,6 +719,7 @@ def store_ensemble_scores(
             failed.append(key)
         else:
             score_arrays.append(scores)
+            detector_names.append(key)
 
     if not score_arrays:
         return {
@@ -722,7 +728,39 @@ def store_ensemble_scores(
         }
 
     min_len = min(len(s) for s in score_arrays)
-    fused: np.ndarray = np.mean([s[:min_len] for s in score_arrays], axis=0)
+    trimmed = [s[:min_len] for s in score_arrays]
+
+    # --- Quality-weighted fusion ---
+    # Weight = signal concentration: fraction of total score mass in the top-1% of points.
+    # A flat/uninformative detector distributes mass evenly → weight ≈ 0.01 (the baseline).
+    # An informative detector concentrates mass at anomaly spikes → weight >> 0.01.
+    # We subtract the baseline (0.01) and floor at 0 so truly flat detectors get zero weight.
+    top_k = max(1, min_len // 100)  # top 1% of points
+    weights: list[float] = []
+    for sc in trimmed:
+        total_mass = float(np.sum(sc))
+        if total_mass < 1e-9:
+            # All-zero detector — completely uninformative
+            weights.append(0.0)
+        else:
+            top_mass = float(np.sum(np.partition(sc, -top_k)[-top_k:]))
+            concentration = top_mass / total_mass
+            # Subtract the uniform baseline (1%) so flat detectors collapse to ~0
+            weights.append(max(0.0, concentration - 0.01))
+
+    weight_sum = sum(weights)
+    if weight_sum < 1e-9:
+        # All detectors are flat — fall back to equal-weight mean
+        logger.warning(
+            "store_ensemble_scores: all detectors have near-zero concentration weight "
+            "for '{}'; falling back to equal-weight mean.", name
+        )
+        fused: np.ndarray = np.mean(trimmed, axis=0)
+        weight_report = {d: round(1.0 / len(trimmed), 4) for d in detector_names}
+    else:
+        normalised = [w / weight_sum for w in weights]
+        fused = np.sum([w * sc for w, sc in zip(normalised, trimmed)], axis=0)
+        weight_report = {d: round(w, 4) for d, w in zip(detector_names, normalised)}
 
     # Persist to a temp file readable by the finalize node in the parent process.
     out_path = os.path.join(tempfile.gettempdir(), f"tsad_ensemble_{name}.json")
@@ -730,18 +768,176 @@ def store_ensemble_scores(
         json.dump(fused.tolist(), f)
 
     logger.info(
-        "store_ensemble_scores: fused {} detector(s) → {} points → {}",
+        "store_ensemble_scores: quality-weighted fusion of {} detector(s) → {} points → {} | weights={}",
         len(score_arrays),
         fused.size,
         out_path,
+        weight_report,
     )
     return {
         "status": "ok",
         "n_points": int(fused.size),
-        "detectors_fused": [d.lower().replace("_detector", "") for d in detectors if d.lower().replace("_detector", "") in _VALID],
+        "detectors_fused": detector_names,
+        "detector_weights": weight_report,
         "failed_detectors": failed,
-        "message": "Ensemble scores stored. The finalize node will read them automatically.",
+        "message": (
+            "Quality-weighted ensemble scores stored. "
+            "Informative detectors (high score concentration) received higher weight. "
+            "The finalize node will read them automatically."
+        ),
     }
+
+@mcp.tool()  # type: ignore[untyped-decorator]
+def verify_with_detectors(
+    name: str,
+    primary_detectors: list[str],
+    anomaly_indices: list[int],
+) -> dict:
+    """Independently verify anomaly detection results using detectors NOT used by the primary agent.
+
+    Called by the validator node — NOT intended for use by the primary analysis agent.
+
+    Runs the complementary detector pool (those excluded from *primary_detectors*) and
+    measures how strongly they confirm the primary agent's flagged anomaly points.  The
+    agreement score is the mean verifier-ensemble score at the flagged indices:
+
+    - score ≥ 0.40  → ACCEPTED  (independent detectors confirm the anomalies)
+    - score <  0.40  → REJECTED  (independent detectors do not confirm the anomalies)
+
+    Special cases:
+    - If the primary used all 5 detectors, independent verification is impossible → auto-accept.
+    - If the primary flagged no anomalies and verifiers also find nothing (max < 0.70) → accept.
+    - If the primary flagged no anomalies but verifiers find strong signals (max ≥ 0.70) → reject.
+
+    Args:
+        name: Series name or ID (same as used with other tools).
+        primary_detectors: Short detector names already used by the primary agent
+            (e.g. ``['iforest', 'lof']``).  These are excluded from the verifier pool.
+        anomaly_indices: Point indices the primary agent flagged as anomalous.
+
+    Returns:
+        dict with ``accepted``, ``agreement_score``, ``verifier_detectors``,
+        ``verifier_hot_segments``, and ``summary``.
+    """
+    ALL_DETECTORS = {"lof", "hbos", "iforest", "pca", "poly"}
+    AGREEMENT_THRESHOLD = 0.40
+    MISSED_ANOMALY_THRESHOLD = 0.70
+
+    # Normalise primary detector names (strip _detector suffix if present)
+    primary = {d.lower().replace("_detector", "") for d in primary_detectors}
+    verifiers = ALL_DETECTORS - primary
+
+    if not verifiers:
+        return {
+            "accepted": True,
+            "agreement_score": 1.0,
+            "verifier_detectors": [],
+            "verifier_hot_segments": [],
+            "summary": (
+                "Primary agent used all available detectors; "
+                "independent verification not possible. Auto-accepting."
+            ),
+        }
+
+    # Run verifier detectors (cache-warm if already computed; cold otherwise)
+    verifier_scores: dict[str, np.ndarray] = {}
+    for det in sorted(verifiers):
+        scores = _get_or_compute_raw(name, det)
+        if scores is not None:
+            verifier_scores[det] = scores
+        else:
+            logger.warning("verify_with_detectors: {} failed for series '{}'", det, name)
+
+    if not verifier_scores:
+        return {
+            "accepted": True,
+            "agreement_score": 0.0,
+            "verifier_detectors": [],
+            "verifier_hot_segments": [],
+            "summary": "All verifier detectors failed; cannot assess agreement. Auto-accepting.",
+        }
+
+    # Compute mean verifier ensemble
+    arrays = list(verifier_scores.values())
+    min_len = min(len(a) for a in arrays)
+    verifier_ensemble = np.mean([a[:min_len] for a in arrays], axis=0)
+
+    # Build verifier hot-segments list (guides the retry prompt)
+    n = len(verifier_ensemble)
+    seg_size = max(1, n // 20)
+    verifier_hot_segments: list[dict] = []
+    for seg_start in range(0, n, seg_size):
+        seg_end = min(seg_start + seg_size, n) - 1
+        seg_scores = verifier_ensemble[seg_start : seg_end + 1]
+        seg_max = float(np.max(seg_scores))
+        if seg_max > 0.5:
+            verifier_hot_segments.append(
+                {
+                    "start": seg_start,
+                    "end": seg_end,
+                    "max_score": round(seg_max, 3),
+                    "count_above_0.7": int(np.sum(seg_scores > 0.7)),
+                }
+            )
+
+    # --- Agreement assessment ---
+    if not anomaly_indices:
+        # Primary found no anomalies — check whether verifiers agree
+        verifier_max = float(np.max(verifier_ensemble))
+        if verifier_max >= MISSED_ANOMALY_THRESHOLD:
+            agreement_score = 0.0
+            accepted = False
+            summary = (
+                f"Primary agent reported no anomalies, but verifier detectors "
+                f"{sorted(verifier_scores)} found strong signals "
+                f"(max score={verifier_max:.3f} ≥ {MISSED_ANOMALY_THRESHOLD}). "
+                f"Possible missed anomalies."
+            )
+        else:
+            agreement_score = 1.0
+            accepted = True
+            summary = (
+                f"Primary agent reported no anomalies and verifier detectors "
+                f"{sorted(verifier_scores)} confirm low scores "
+                f"(max={verifier_max:.3f} < {MISSED_ANOMALY_THRESHOLD}). Accepting."
+            )
+    else:
+        # Clamp indices to valid series length
+        valid_indices = [i for i in anomaly_indices if 0 <= i < min_len]
+        if not valid_indices:
+            agreement_score = 0.0
+            accepted = False
+            summary = (
+                "All flagged anomaly indices are out of range for the series. "
+                "The report appears malformed."
+            )
+        else:
+            agreement_score = float(np.mean(verifier_ensemble[valid_indices]))
+            accepted = agreement_score >= AGREEMENT_THRESHOLD
+            summary = (
+                f"Verifier detectors {sorted(verifier_scores)} scored the "
+                f"{len(valid_indices)} flagged point(s) with mean score "
+                f"{agreement_score:.3f} "
+                f"({'≥' if accepted else '<'} threshold {AGREEMENT_THRESHOLD}). "
+                f"Decision: {'ACCEPTED' if accepted else 'REJECTED'}."
+            )
+
+    logger.info(
+        "verify_with_detectors: series='{}' verifiers={} agreement={:.3f} accepted={}",
+        name,
+        sorted(verifier_scores),
+        agreement_score,
+        accepted,
+    )
+
+    return {
+        "accepted": accepted,
+        "agreement_score": round(agreement_score, 4),
+        "verifier_detectors": sorted(verifier_scores.keys()),
+        "verifier_hot_segments": verifier_hot_segments[:10],
+        "summary": summary,
+    }
+
 
 def main() -> None:
     """Run the MCP server over stdio."""

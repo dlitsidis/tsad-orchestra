@@ -1,24 +1,33 @@
-import asyncio
 import random
 import numpy as np
-import pandas as pd
 from sqlalchemy import create_engine, text
 
 from src.benchmark.configurations import RANDOM_SEED, SUBSET_SIZE
 from src.utils.db import list_tables, read_time_series_full, get_db_url
-from src.agent.client import run as run_agent
-from src.benchmark.run_baselines import calculate_metrics
+from src.mcp_server import (
+    _run_hbos_raw as hbos_detector,
+    _run_iforest_raw as iforest_detector,
+    _run_pca_raw as pca_detector,
+    _run_poly_raw as poly_detector,
+    _run_lof_raw as lof_detector
+)
 from TSB_UAD.utils.slidingWindows import find_length
+from TSB_UAD.vus.metrics import get_metrics
 
-async def main():
+def calculate_metrics(y_true, y_score, sliding_window):
+    metrics = get_metrics(score=y_score, labels=y_true, slidingWindow=sliding_window)
+    # Convert numpy types to float for db insertion
+    return {k: float(v) for k, v in metrics.items()}
+
+def main():
     random.seed(RANDOM_SEED)
     
     tables = list_tables()
     ts_tables = [t for t in tables if t != 'experiments']
-    
+
     if len(ts_tables) > SUBSET_SIZE:
         ts_tables = random.sample(ts_tables, SUBSET_SIZE)
-        
+    
     engine = create_engine(get_db_url())
     with engine.begin() as conn:
         conn.execute(text("""
@@ -46,39 +55,46 @@ async def main():
         """))
     
     for table in ts_tables:
-        print(f"Agentic benchmarking table: {table}")
+        print(f"Benchmarking table: {table} with ensemble")
         
         with engine.connect() as conn:
             existing = conn.execute(
-                text("SELECT 1 FROM experiments WHERE dataset_name = :dataset AND method = 'new_new_agentic' LIMIT 1"),
+                text("SELECT 1 FROM experiments WHERE dataset_name = :dataset AND method = 'ensemble' LIMIT 1"),
                 {"dataset": table}
             ).fetchone()
             
         if existing:
-            print(f"Skipping agentic on {table}: Already computed.")
+            print(f"  Skipping ensemble on {table}: Already computed.")
             continue
-            
+
         df = read_time_series_full(table)
-        if 'label' not in df.columns:
-            print(f"Skipping {table}: no 'label' column")
-            continue
-            
+        data = df.iloc[:,1].astype(float)
+        
+        slidingWindow = find_length(data)
         y_true = df['label'].fillna(0).astype(int).values
         n = len(y_true)
         
         try:
-            report = await run_agent(table)
+            scores = []
             
-            if report.point_scores and len(report.point_scores) == n:
-                y_score = np.array(report.point_scores, dtype=float)
-            else:
-                y_score = np.zeros(n, dtype=float)
-                for anom in report.anomalies:
-                    if 0 <= anom.index < n:
-                        y_score[anom.index] = anom.score
-                    
-            data = df.iloc[:,1].astype(float)
-            slidingWindow = find_length(data)
+            # Get individual scores
+            print("    Running lof...")
+            scores.append(lof_detector(table))
+            
+            print("    Running iforest...")
+            scores.append(iforest_detector(table))
+            
+            print("    Running hbos...")
+            scores.append(hbos_detector(table))
+            
+            print("    Running pca...")
+            scores.append(pca_detector(table))
+            
+            print("    Running poly...")
+            scores.append(poly_detector(table))
+            
+            # Fuse scores to a mean score
+            y_score = np.mean(scores, axis=0)
             
             metrics = calculate_metrics(y_true, y_score, slidingWindow)
             
@@ -90,13 +106,12 @@ async def main():
                         vus_roc, vus_pr, affiliation_precision, affiliation_recall
                     )
                     VALUES (
-                        :dataset, :method, :auc_roc, :auc_pr, :precision, :recall, :f, 
+                        :dataset, 'ensemble', :auc_roc, :auc_pr, :precision, :recall, :f, 
                         :precision_at_k, :rprecision, :rrecall, :rf, :r_auc_roc, :r_auc_pr, 
                         :vus_roc, :vus_pr, :affiliation_precision, :affiliation_recall
                     )
                 """), {
                     "dataset": table,
-                    "method": "new_new_agentic",
                     "auc_roc": metrics.get("AUC_ROC"),
                     "auc_pr": metrics.get("AUC_PR"),
                     "precision": metrics.get("Precision"),
@@ -114,7 +129,7 @@ async def main():
                     "affiliation_recall": metrics.get("Affiliation_Recall")
                 })
         except Exception as e:
-            print(f"Failed on {table}: {e}")
+            print(f"  Failed ensemble on {table}: {e}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

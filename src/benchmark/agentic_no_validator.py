@@ -1,3 +1,11 @@
+"""Ablation benchmark: agentic pipeline WITHOUT the validator agent.
+
+Mirrors ``agentic.py`` exactly, but passes ``skip_validator=True`` to the
+agent runner so that the finalize node connects directly to END — no
+validator critique or retry loop.  Results are stored with
+``method = 'agentic_no_validator'`` for side-by-side comparison.
+"""
+
 import asyncio
 import random
 import numpy as np
@@ -9,6 +17,8 @@ from src.utils.db import list_tables, read_time_series_full, get_db_url
 from src.agent.client import run as run_agent
 from src.benchmark.run_baselines import calculate_metrics
 from TSB_UAD.utils.slidingWindows import find_length
+
+METHOD_NAME = "new_agentic_no_validator"
 
 async def main():
     random.seed(RANDOM_SEED)
@@ -46,16 +56,16 @@ async def main():
         """))
     
     for table in ts_tables:
-        print(f"Agentic benchmarking table: {table}")
+        print(f"Agentic (no validator) benchmarking table: {table}")
         
         with engine.connect() as conn:
             existing = conn.execute(
-                text("SELECT 1 FROM experiments WHERE dataset_name = :dataset AND method = 'new_new_agentic' LIMIT 1"),
-                {"dataset": table}
+                text("SELECT 1 FROM experiments WHERE dataset_name = :dataset AND method = :method LIMIT 1"),
+                {"dataset": table, "method": METHOD_NAME}
             ).fetchone()
             
         if existing:
-            print(f"Skipping agentic on {table}: Already computed.")
+            print(f"Skipping {METHOD_NAME} on {table}: Already computed.")
             continue
             
         df = read_time_series_full(table)
@@ -67,7 +77,7 @@ async def main():
         n = len(y_true)
         
         try:
-            report = await run_agent(table)
+            report = await run_agent(table, skip_validator=True)
             
             if report.point_scores and len(report.point_scores) == n:
                 y_score = np.array(report.point_scores, dtype=float)
@@ -96,7 +106,7 @@ async def main():
                     )
                 """), {
                     "dataset": table,
-                    "method": "new_new_agentic",
+                    "method": METHOD_NAME,
                     "auc_roc": metrics.get("AUC_ROC"),
                     "auc_pr": metrics.get("AUC_PR"),
                     "precision": metrics.get("Precision"),
