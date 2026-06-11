@@ -10,13 +10,15 @@ import streamlit as st
 from dotenv import load_dotenv
 from loguru import logger
 
+from src.logging_config import setup_logging
+
+setup_logging(process_name="tsad_orchestra_ui")
+
 from src.agent.client import run
 from src.utils.db import list_tables, read_time_series, read_time_series_by_id
 
-# Load environment variables
 load_dotenv()
 
-# Configure Streamlit page
 st.set_page_config(
     page_title="TSAD Orchestra",
     page_icon="📊",
@@ -24,7 +26,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Initialize session state
 if "selected_series" not in st.session_state:
     st.session_state.selected_series = None
 if "series_data" not in st.session_state:
@@ -64,7 +65,6 @@ def plot_time_series(df: pd.DataFrame, anomalies: list[dict] | None = None) -> g
     """Create an interactive Plotly chart of the time series with anomalies highlighted."""
     fig = go.Figure()
 
-    # Add time series line
     fig.add_trace(
         go.Scatter(
             x=df.index,
@@ -76,7 +76,6 @@ def plot_time_series(df: pd.DataFrame, anomalies: list[dict] | None = None) -> g
         )
     )
 
-    # Add anomalies if available
     if anomalies:
         anomaly_indices = [a["index"] for a in anomalies]
         anomaly_values = [df.iloc[a["index"], 1] for a in anomalies if a["index"] < len(df)]
@@ -116,16 +115,9 @@ def run_anomaly_detection_sync(series_id: str) -> Any:
         AnomalyReport with detected anomalies.
     """
     try:
-        # Run the agent asynchronously from a thread
-        # Pass the series_id so the agent can load it via MCP tools
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            report = loop.run_until_complete(run(series_id))
-        finally:
-            loop.close()
-
-        return report
+        # Run the agent asynchronously using asyncio.run
+        # This properly handles child watcher initialization for subprocesses
+        return asyncio.run(run(series_id))
 
     except Exception as e:
         st.error(f"Error running anomaly detection: {str(e)}")
@@ -138,7 +130,6 @@ def main():
     st.title("📊 TSAD Orchestra — Time Series Anomaly Detection")
     st.markdown("An intelligent agent-powered tool for detecting anomalies in time series data from your database.")
 
-    # Check environment variables
     if not os.getenv("OPENAI_API_KEY"):
         st.error("❌ Missing OPENAI_API_KEY environment variable. " "Please set it in your .env file before running this app.")
         st.stop()
@@ -150,18 +141,15 @@ def main():
         )
         st.stop()
 
-    # Sidebar for series selection and configuration
     with st.sidebar:
         st.header("⚙️ Configuration")
 
-        # Load available series
         available_series = load_available_series()
 
         if not available_series:
             st.warning("No time series found in the database. Please check your database connection.")
             return
 
-        # Series selection
         selected_series = st.selectbox(
             "Select a Time Series",
             options=available_series,
@@ -169,7 +157,6 @@ def main():
             help="Choose a time series from the database",
         )
 
-        # Load and display series preview
         if selected_series != st.session_state.selected_series:
             st.session_state.selected_series = selected_series
             st.session_state.series_data = load_time_series_data(selected_series)
@@ -196,11 +183,9 @@ def main():
             with col3:
                 st.metric("Range", f"{df.iloc[:, 1].max() - df.iloc[:, 1].min():.4f}")
 
-    # Main content area
     if st.session_state.series_data is not None:
         df = st.session_state.series_data
 
-        # Run Detection button
         if st.button(
             "🔍 Run Detection",
             disabled=st.session_state.is_running,
@@ -211,7 +196,6 @@ def main():
 
             with st.spinner("🚀 Running anomaly detection agent... This may take a minute."):
                 try:
-                    # Run detection with series_id, not the DataFrame
                     report = run_anomaly_detection_sync(st.session_state.selected_series)
 
                     if report:
@@ -236,7 +220,6 @@ def main():
 
         st.plotly_chart(fig, use_container_width=True)
 
-        # Show detection results if available
         if st.session_state.detection_result:
             report = st.session_state.detection_result
 

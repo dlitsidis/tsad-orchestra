@@ -17,12 +17,38 @@ class Anomaly(BaseModel):
 class AnomalyReport(BaseModel):
     anomalies: list[Anomaly] = Field(
         default_factory=list,
-        description="List of detected anomalies.",
+        description="Confirmed anomalies identified through drill-down. High-confidence points only.",
     )
-    anomaly_count: int = Field(default=0, description="Total number of anomalies detected by the selected detector.")
-    detectors_used: list[str] = Field(..., description="Names of the detectors whose outputs were aggregated into the final report.")
-    tools_called: list[str] = Field(default_factory=list, description="All tool names called during analysis.")
-    summary: str = Field(..., description="Summary of anomaly detection results.")
+    anomaly_count: int = Field(default=0, description="Total number of confirmed anomalies.", exclude=True)
+    detectors_used: list[str] = Field(
+        ...,
+        description=(
+            "Short names of detectors whose outputs were aggregated (e.g. ['iforest', 'lof']). "
+            "These determine which detectors are fused into the final per-point score vector."
+        ),
+    )
+    tools_called: list[str] = Field(default_factory=list, description="All tool names called during analysis.", exclude=True)
+    summary: str = Field(..., description="Summary of anomaly detection results and ensemble reasoning.")
+    point_scores: list[float] = Field(
+        default_factory=list,
+        exclude=True,
+        description=(
+            "Per-point ensemble anomaly score in [0, 1], one value per series point. "
+            "Computed deterministically post-reasoning by fusing the detectors_used score arrays. "
+            "Never set by the LLM — populated automatically in the finalize node."
+        ),
+    )
+
+
+class LLMFinalReport(BaseModel):
+    detectors_used: list[str] = Field(
+        ...,
+        description=(
+            "Short names of detectors whose outputs were aggregated (e.g. ['iforest', 'lof']). "
+            "These determine which detectors are fused into the final per-point score vector."
+        ),
+    )
+    summary: str = Field(..., description="Summary of anomaly detection results and ensemble reasoning.")
 
 
 class ValidationResult(BaseModel):
@@ -57,13 +83,46 @@ class TimeSeriesData(BaseModel):
 
 
 class DetectionStubResult(BaseModel):
-    """Tool output for stub anomaly detection."""
+    """Tool output for stub anomaly detection (kept for backward compat)."""
 
     anomalies: list[Anomaly] = Field(
         default_factory=list,
         description="Detected anomalies (stubbed).",
     )
     notes: str = Field(..., description="Stub detector notes.")
+
+
+class DetectorSummary(BaseModel):
+    """Compact stat-block returned by a detector tool when not in raw mode.
+
+    The LLM sees only these aggregate statistics — not the full score array —
+    keeping the context window small regardless of series length.
+    """
+
+    detector: str = Field(..., description="Short detector name (e.g. 'iforest').")
+    series: str = Field(..., description="Series name or ID that was analysed.")
+    n_points: int = Field(..., description="Total number of points in the series.")
+    anomaly_candidates: dict[str, int] = Field(
+        ...,
+        description="Point counts exceeding score thresholds: keys are 'above_0.5', 'above_0.7', 'above_0.9'.",
+    )
+    top_score: float = Field(..., description="Highest anomaly score produced by this detector.")
+    score_percentiles: dict[str, float] = Field(
+        ...,
+        description="Score distribution: p50, p90, p95, p99.",
+    )
+    hot_segments: list[dict] = Field(
+        default_factory=list,
+        description=(
+            "Time-index ranges with max_score > 0.5. "
+            "Each entry has: start, end, max_score, count_above_0.7. "
+            "Use these as targets for drill_down_range."
+        ),
+    )
+    hint: str = Field(
+        default="Use drill_down_range(name, start, end, detectors) to inspect suspicious segments.",
+        description="Guidance for the next step.",
+    )
 
 
 @dataclass

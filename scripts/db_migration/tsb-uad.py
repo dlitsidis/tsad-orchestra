@@ -12,7 +12,7 @@ from sqlalchemy import create_engine, text
 
 load_dotenv()
 
-# Configuration
+
 URL = "https://www.thedatum.org/datasets/TSB-AD-U.zip"
 # Use Path for robust directory handling across different OS environments
 TARGET_DIR = Path("./scripts/db_migration/univariate/TSB-AD-U")
@@ -34,20 +34,33 @@ def download_and_extract():
 
 
 def migrate_to_db():
-    # Discovery: Find all CSVs recursively using rglob
     all_files = list(TARGET_DIR.rglob("*.csv"))
     if not all_files:
         print(f"No CSVs found in {TARGET_DIR}")
         return
 
-    # Grouping: Group files by the dataset_name (part 2 of filename)
-    datasets = defaultdict(list)
+    # Filter for timeseries with less than 6000 points
+    # Assumes 1 header line, so max 6000 lines total (5999 points)
+    filtered_files = []
     for f in all_files:
+        try:
+            with open(f, "r") as file:
+                has_less_than_6000 = True
+                for i, _ in enumerate(file):
+                    if i >= 6000:
+                        has_less_than_6000 = False
+                        break
+                if has_less_than_6000:
+                    filtered_files.append(f)
+        except Exception as e:
+            print(f"Error reading {f}: {e}")
+
+    datasets = defaultdict(list)
+    for f in filtered_files:
         parts = f.name.split("_")
         if len(parts) >= 2:
             datasets[parts[1]].append(f)
 
-    # Sampling: Pick 10 random files per dataset using the seed
     random.seed(SEED)
     selected_files = []
     for files in datasets.values():
@@ -62,7 +75,6 @@ def migrate_to_db():
 
         try:
             with engine.begin() as conn:
-                # Setup Table & Hypertable
                 conn.execute(
                     text(
                         f'CREATE TABLE IF NOT EXISTS "{tbl}" (time TIMESTAMPTZ NOT NULL, data DOUBLE PRECISION, label INTEGER)'  # noqa: E501
@@ -78,12 +90,10 @@ def migrate_to_db():
                 if not is_hyper:
                     conn.execute(text(f"SELECT create_hypertable('\"{tbl}\"', 'time')"))
 
-                # Data Processing
                 df = pd.read_csv(file_path)
                 df.columns = df.columns.str.lower()
 
                 if "time" not in df.columns:
-                    # Defaulting to 2026-01-01 for synthetic timestamps
                     df["time"] = pd.date_range(start="2026-01-01", periods=len(df), freq="s")
 
                 df.to_sql(

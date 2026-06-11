@@ -47,6 +47,17 @@ async def main():
     
     for table in ts_tables:
         print(f"Agentic benchmarking table: {table}")
+        
+        with engine.connect() as conn:
+            existing = conn.execute(
+                text("SELECT 1 FROM experiments WHERE dataset_name = :dataset AND method = 'agentic' LIMIT 1"),
+                {"dataset": table}
+            ).fetchone()
+            
+        if existing:
+            print(f"Skipping agentic on {table}: Already computed.")
+            continue
+            
         df = read_time_series_full(table)
         if 'label' not in df.columns:
             print(f"Skipping {table}: no 'label' column")
@@ -58,12 +69,13 @@ async def main():
         try:
             report = await run_agent(table)
             
-            y_pred = np.zeros(n, dtype=int)
-            y_score = np.zeros(n, dtype=float)
-            
-            for anom in report.anomalies:
-                if 0 <= anom.index < n:
-                    y_score[anom.index] = anom.score
+            if report.point_scores and len(report.point_scores) == n:
+                y_score = np.array(report.point_scores, dtype=float)
+            else:
+                y_score = np.zeros(n, dtype=float)
+                for anom in report.anomalies:
+                    if 0 <= anom.index < n:
+                        y_score[anom.index] = anom.score
                     
             data = df.iloc[:,1].astype(float)
             slidingWindow = find_length(data)

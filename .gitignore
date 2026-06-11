@@ -18,7 +18,10 @@ __pycache__/
 
 # Logs
 *.log
+logs/
 
 # Database files
 timescaledb_data/
 scripts/db_migration/univariate/*
+
+docs/algorithm.tex

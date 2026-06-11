@@ -4,6 +4,10 @@ import sys
 
 from loguru import logger
 
+from src.logging_config import setup_logging
+
+setup_logging(process_name="tsad_orchestra")
+
 from src.agent.client import run
 
 

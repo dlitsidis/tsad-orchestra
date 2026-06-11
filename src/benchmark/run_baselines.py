@@ -4,7 +4,7 @@ from sqlalchemy import create_engine, text
 
 from src.benchmark.configurations import RANDOM_SEED, SUBSET_SIZE
 from src.utils.db import list_tables, read_time_series_full, get_db_url
-from src.mcp_server import lof_detector, hbos_detector, iforest_detector, pca_detector, poly_detector
+from src.mcp_server import _run_hbos_raw as hbos_detector, _run_iforest_raw as iforest_detector, _run_pca_raw as pca_detector, _run_poly_raw as poly_detector, _run_lof_raw as lof_detector
 from TSB_UAD.utils.slidingWindows import find_length
 from TSB_UAD.vus.metrics import get_metrics
 
@@ -21,8 +21,6 @@ def main():
 
     if len(ts_tables) > SUBSET_SIZE:
         ts_tables = random.sample(ts_tables, SUBSET_SIZE)
-
-    ts_tables = ['545_smap_id_15_sensor_tr_1173_1st_2750']      
     
     engine = create_engine(get_db_url())
     with engine.begin() as conn:
@@ -71,8 +69,19 @@ def main():
         
         for name, func in detectors.items():
             print(f"  Running {name}...")
+            
+            with engine.connect() as conn:
+                existing = conn.execute(
+                    text("SELECT 1 FROM experiments WHERE dataset_name = :dataset AND method = :method LIMIT 1"),
+                    {"dataset": table, "method": name}
+                ).fetchone()
+                
+            if existing:
+                print(f"    Skipping {name} on {table}: Already computed.")
+                continue
+
             try:
-                y_score = func(table, _return_raw=True)
+                y_score = func(table)
                 
                 metrics = calculate_metrics(y_true, y_score, slidingWindow)
                 

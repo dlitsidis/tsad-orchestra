@@ -23,7 +23,7 @@ from mcp.client.stdio import stdio_client
 from openai import RateLimitError
 from pydantic import SecretStr
 
-from src.agent.models import Anomaly, AnomalyReport, ValidationResult
+from src.agent.models import Anomaly, AnomalyReport, LLMFinalReport, ValidationResult
 from src.agent.prompts import (
     AGENT_SYSTEM_PROMPT,
     AGENT_USER_PROMPT,
@@ -33,8 +33,10 @@ from src.agent.prompts import (
 
 load_dotenv()
 
-MODEL = "gpt-4o-mini"
-MAX_ITERATIONS = 3
+# MODEL = "gpt-4o-mini"
+MODEL = "gpt-4.1-mini"
+
+MAX_ITERATIONS = 5
 
 
 class AgentState(TypedDict):
@@ -88,9 +90,6 @@ def default_mcp_server_params() -> StdioServerParameters:
     )
 
 
-# ---------------------------------------------------------------------------
-# Primary agent nodes
-# ---------------------------------------------------------------------------
 
 
 async def call_model(state: AgentState, llm_with_tools: Any) -> dict[str, Any]:
@@ -156,8 +155,8 @@ def should_continue(state: AgentState) -> str:
 
 
 async def too_many_tools(state: AgentState) -> dict[str, Any]:
-    """Intercept execution if the agent attempts to run more than 3 detectors cumulatively."""
-    logger.warning("Agent attempted to run >3 detectors. Intercepting.")
+    """Intercept execution if the agent attempts to run more than 7 detectors cumulatively."""
+    logger.warning("Agent attempted to run >7 detectors. Intercepting.")
     last = state["messages"][-1]
     
     responses = []
@@ -187,7 +186,15 @@ async def force_detector(state: AgentState) -> dict[str, Any]:
         "messages": [
             {
                 "role": "user",
-                "content": "You have profiled the data but haven't run any anomaly detectors. You MUST call at least one anomaly detector tool (e.g., lof_detector, hbos_detector, iforest_detector, pca_detector, poly_detector) before finishing.",
+                "content": (
+                    "You have profiled the data but haven't run any anomaly detectors yet. "
+                    "You MUST follow the two-phase workflow:\n"
+                    "Phase 1: Run 2-3 detector tools (lof_detector, hbos_detector, iforest_detector, "
+                    "pca_detector, poly_detector) to get their stat summaries and hot_segments.\n"
+                    "Phase 2: Call drill_down_range on the most suspicious segments to get "
+                    "per-point anomaly details and consensus_points.\n"
+                    "Only then produce your final report."
+                ),
             }
         ]
     }
@@ -223,27 +230,106 @@ async def finalize(state: AgentState, llm: ChatOpenAI) -> dict[str, Any]:
         dict.fromkeys(tc["name"] for msg in state["messages"] if hasattr(msg, "tool_calls") for tc in (msg.tool_calls or []))
     )
 
-    # Let the LLM populate the consolidated AnomalyReport based on its ensemble reasoning
-    structured = cast(
-        AnomalyReport,
+    # Let the LLM consolidate the two-phase results into a structured report.
+    # Point-level scoring is computed deterministically below — not by the LLM.
+    llm_report = cast(
+        LLMFinalReport,
         await _invoke_with_backoff(
-            llm.with_structured_output(AnomalyReport),
+            llm.with_structured_output(LLMFinalReport),
             [
                 {
                     "role": "user",
                     "content": (
-                        f"Given these detector outputs, act as an ensemble judge and determine the final list of true anomalies.\n\n{context}\n\n"
-                        f"For 'detectors_used', list all the detectors you chose to run.\n"
-                        f"For 'anomalies', extract and list the exact index, value, and severity score for each point you decide is a true anomaly based on consensus or strong signals.\n"
-                        f"For 'summary', explain your logic and why you selected these points."
+                        "Given these two-phase detector outputs (stat summaries + drill-down results), "
+                        "produce the final report.\n\n"
+                        f"{context}\n\n"
+                        "For 'detectors_used': list the SHORT names of every detector you ran "
+                        "(e.g. ['iforest', 'lof']). These must match what you passed to store_ensemble_scores.\n"
+                        "For 'summary': explain your screening observations, which segments you drilled "
+                        "into, what consensus you found, and your final reasoning."
                     ),
                 }
             ],
         ),
     )
 
-    structured.tools_called = tools_called
-    structured.anomaly_count = len(structured.anomalies)
+    import json
+    extracted_anomalies_map = {}
+    for msg in state["messages"]:
+        if getattr(msg, "type", None) == "tool":
+            id_to_name = {tc["id"]: tc["name"] for m in state["messages"] for tc in (getattr(m, "tool_calls", None) or [])}
+            name = id_to_name.get(getattr(msg, "tool_call_id", ""), "")
+            if name == "drill_down_range":
+                content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                try:
+                    import ast
+                    # The tool output might be a stringified Python dict, or a list of MCP contents
+                    data = ast.literal_eval(content) if isinstance(content, str) else content
+                    if isinstance(data, str):
+                        try:
+                            data = json.loads(data)
+                        except json.JSONDecodeError:
+                            data = ast.literal_eval(data)
+                            
+                    # MCP tools return a list of text contents: [{"type": "text", "text": "..."}]
+                    if isinstance(data, list):
+                        for item in data:
+                            if isinstance(item, dict) and item.get("type") == "text":
+                                inner_text = item.get("text", "")
+                                try:
+                                    data = ast.literal_eval(inner_text)
+                                except Exception:
+                                    data = json.loads(inner_text)
+                                break
+                        
+                    if isinstance(data, dict):
+                        for pt in data.get("consensus_points", []):
+                            extracted_anomalies_map[pt["index"]] = Anomaly(
+                                index=pt["index"],
+                                value=pt["value"],
+                                score=pt.get("mean_score", 0.0)
+                            )
+                except Exception as e:
+                    logger.debug(f"Could not parse drill_down_range output for anomalies: {e}")
+                    
+    extracted_anomalies = sorted(list(extracted_anomalies_map.values()), key=lambda x: x.index)
+
+    structured = AnomalyReport(
+        detectors_used=llm_report.detectors_used,
+        summary=llm_report.summary,
+        anomalies=extracted_anomalies,
+        tools_called=tools_called,
+        anomaly_count=len(extracted_anomalies)
+    )
+
+    # Read the fused per-point score vector that store_ensemble_scores wrote to disk.
+    # This avoids re-running any detector — the MCP server cached everything.
+    import json
+    import tempfile
+    score_path = os.path.join(tempfile.gettempdir(), f"tsad_ensemble_{state['series_id']}.json")
+    if os.path.exists(score_path):
+        try:
+            with open(score_path) as f:
+                point_scores: list[float] = json.load(f)
+            logger.info("Loaded {} ensemble point scores from {}.", len(point_scores), score_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not read ensemble score file: {}. Falling back to recompute.", exc)
+            from src.utils.ensemble import compute_ensemble_scores
+            point_scores = await asyncio.to_thread(
+                compute_ensemble_scores, state["series_id"], structured.detectors_used
+            )
+    else:
+        logger.warning(
+            "Ensemble score file not found at {}. Agent may have skipped store_ensemble_scores. "
+            "Falling back to recompute.",
+            score_path,
+        )
+        from src.utils.ensemble import compute_ensemble_scores
+        point_scores = await asyncio.to_thread(
+            compute_ensemble_scores, state["series_id"], structured.detectors_used
+        )
+
+    structured.point_scores = point_scores
 
     logger.info(
         "Primary agent produced report (iteration {}): {} anomalies from ensemble {}",
@@ -251,25 +337,53 @@ async def finalize(state: AgentState, llm: ChatOpenAI) -> dict[str, Any]:
         len(structured.anomalies),
         structured.detectors_used,
     )
-    return {"result": structured, "messages": []}
+    return {"result": structured}
 
 
-# ---------------------------------------------------------------------------
-# Validator node
-# ---------------------------------------------------------------------------
 
 
 async def validate(state: AgentState, llm: ChatOpenAI) -> dict[str, Any]:
     """Run the validator against the current AnomalyReport draft."""
     report = state["result"]
+    new_iteration = state["iteration"] + 1
+
     if report is None:
-        return {"critique": "No report was produced.", "iteration": state["iteration"] + 1}
+        return {"critique": "No report was produced.", "iteration": new_iteration}
 
     context = _collect_tool_results(state["messages"])
 
+    # 1. Deterministic Rule Checks (prevents LLM counting hallucinations)
+    tools_called = list(
+        dict.fromkeys(
+            tc["name"] 
+            for msg in state["messages"] 
+            if getattr(msg, "tool_calls", None) 
+            for tc in getattr(msg, "tool_calls", [])
+        )
+    )
+    detector_calls = [name for name in tools_called if name.endswith("_detector")]
+
+    critique = ""
+    if len(detector_calls) < 2:
+        critique = f"Fewer than 2 detectors were run. You only ran {len(detector_calls)}: {detector_calls}. You must run at least 2."
+    elif "drill_down_range" not in tools_called:
+        critique = "No drill-down was performed. You skipped Phase 2."
+    elif "store_ensemble_scores" not in tools_called:
+        critique = "store_ensemble_scores was NOT called. You skipped Phase 3."
+
+    if critique:
+        logger.warning(
+            "Validator rejected report (iteration {}, severity=critical, deterministic): {}",
+            new_iteration,
+            critique,
+        )
+        retry_msg = {"role": "user", "content": f"SYSTEM/VALIDATOR: Your report was rejected.\n\nReason: {critique}\n\nYou must call the appropriate tools (e.g., drill_down_range) to fix this. Do not just reply with text."}
+        return {"critique": critique, "iteration": new_iteration, "messages": [retry_msg]}
+
+    # 2. LLM Checks (for logic, tracing anomalies, etc.)
     user_msg = VALIDATOR_USER_PROMPT.format(
         series_id=state["series_id"],
-        iteration=state["iteration"] + 1,
+        iteration=new_iteration,
         context=context,
         report_json=report.model_dump_json(indent=2),
     )
@@ -285,8 +399,6 @@ async def validate(state: AgentState, llm: ChatOpenAI) -> dict[str, Any]:
         ),
     )
 
-    new_iteration = state["iteration"] + 1
-
     if validation.accepted:
         logger.info("Validator accepted report on iteration {}", new_iteration)
         return {"critique": "", "iteration": new_iteration}
@@ -297,12 +409,10 @@ async def validate(state: AgentState, llm: ChatOpenAI) -> dict[str, Any]:
         validation.severity,
         validation.critique,
     )
-    return {"critique": validation.critique, "iteration": new_iteration}
+    retry_msg = {"role": "user", "content": f"SYSTEM/VALIDATOR: Your report was rejected.\n\nReason: {validation.critique}\n\nYou must call the appropriate tools to fix this. Do not just reply with text."}
+    return {"critique": validation.critique, "iteration": new_iteration, "messages": [retry_msg]}
 
 
-# ---------------------------------------------------------------------------
-# Routing
-# ---------------------------------------------------------------------------
 
 
 def route_after_validator(state: AgentState) -> str:
@@ -315,9 +425,6 @@ def route_after_validator(state: AgentState) -> str:
     return "retry"
 
 
-# ---------------------------------------------------------------------------
-# Graph assembly
-# ---------------------------------------------------------------------------
 
 
 def build_graph(llm_with_tools: Any, tool_node: ToolNode, llm: ChatOpenAI) -> Any:
@@ -362,9 +469,6 @@ def build_graph(llm_with_tools: Any, tool_node: ToolNode, llm: ChatOpenAI) -> An
     return builder.compile()
 
 
-# ---------------------------------------------------------------------------
-# Public entry point
-# ---------------------------------------------------------------------------
 
 
 async def run(series_id: str) -> AnomalyReport:

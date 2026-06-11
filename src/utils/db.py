@@ -9,7 +9,6 @@ import pandas as pd
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
-# Load environment variables
 load_dotenv()
 
 
@@ -65,7 +64,6 @@ def read_time_series(
 
         query += f" ORDER BY {time_column} ASC"
 
-        # Execute query and read into DataFrame
         with engine.connect() as connection:
             df = pd.read_sql(text(query), connection)
 
@@ -108,7 +106,6 @@ def read_time_series_full(
 
         query += f" ORDER BY {time_column} ASC"
 
-        # Execute query and read into DataFrame
         with engine.connect() as connection:
             df = pd.read_sql(text(query), connection)
 
@@ -176,7 +173,6 @@ def get_time_series_name(
         ValueError: If series not found or database error occurs.
     """
     try:
-        # Get all tables
         db_url = get_db_url()
         engine = create_engine(db_url)
 
@@ -191,7 +187,6 @@ def get_time_series_name(
             result = connection.execute(text(query))
             tables = [row[0] for row in result]
 
-        # Find table matching the ID pattern
         matching_tables = [t for t in tables if t.startswith(f"{series_id}_")]
 
         if not matching_tables:
@@ -200,7 +195,6 @@ def get_time_series_name(
                 # f"Available tables: {', '.join(tables)}"
             )
 
-        # Use the first matching table
         table_name = matching_tables[0]
 
         return table_name
