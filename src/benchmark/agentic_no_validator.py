@@ -18,7 +18,7 @@ from src.agent.client import run as run_agent
 from src.benchmark.run_baselines import calculate_metrics
 from TSB_UAD.utils.slidingWindows import find_length
 
-METHOD_NAME = "new_agentic_no_validator"
+METHOD_NAME = "no_validator_4o"
 
 async def main():
     random.seed(RANDOM_SEED)
@@ -28,7 +28,7 @@ async def main():
     
     if len(ts_tables) > SUBSET_SIZE:
         ts_tables = random.sample(ts_tables, SUBSET_SIZE)
-        
+    
     engine = create_engine(get_db_url())
     with engine.begin() as conn:
         conn.execute(text("""

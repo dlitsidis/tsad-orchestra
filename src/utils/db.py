@@ -126,7 +126,7 @@ def read_time_series_by_id(
     series_id: str,
     time_column: str = "time",
     value_column: str = "data",
-) -> list[float]:
+) -> pd.DataFrame:
     """Read a time series by ID from TimescaleDB.
 
     Searches for a table matching the pattern '{series_id}_*' and reads from it.
@@ -158,7 +158,7 @@ def read_time_series_by_id(
 
 def get_time_series_name(
     series_id: str
-) -> pd.DataFrame:
+) -> str:
     """Read a specific time series by name from TimescaleDB.
 
     Args:
@@ -223,6 +223,7 @@ def list_tables() -> list[str]:
         SELECT table_name
         FROM information_schema.tables
         WHERE table_schema = 'public'
+          AND table_name NOT IN ('experiments', 'execution_time', 'tool_usage', 'token_usage')
         ORDER BY table_name
         """
 

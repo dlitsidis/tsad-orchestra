@@ -28,6 +28,11 @@ class AnomalyReport(BaseModel):
         ),
     )
     tools_called: list[str] = Field(default_factory=list, description="All tool names called during analysis.", exclude=True)
+    tool_counts: dict[str, int] = Field(
+        default_factory=dict,
+        description="Counts of each tool called during analysis.",
+        exclude=True,
+    )
     summary: str = Field(..., description="Summary of anomaly detection results and ensemble reasoning.")
     point_scores: list[float] = Field(
         default_factory=list,
@@ -37,6 +42,21 @@ class AnomalyReport(BaseModel):
             "Computed deterministically post-reasoning by fusing the detectors_used score arrays. "
             "Never set by the LLM — populated automatically in the finalize node."
         ),
+    )
+    prompt_tokens: int | None = Field(
+        default=None,
+        exclude=True,
+        description="Total prompt tokens consumed during this run.",
+    )
+    completion_tokens: int | None = Field(
+        default=None,
+        exclude=True,
+        description="Total completion tokens consumed during this run.",
+    )
+    total_tokens: int | None = Field(
+        default=None,
+        exclude=True,
+        description="Total tokens consumed during this run.",
     )
 
 

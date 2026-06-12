@@ -21,6 +21,7 @@ from loguru import logger
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from openai import RateLimitError
+from langchain_core.callbacks import BaseCallbackHandler
 from pydantic import SecretStr
 
 from src.agent.models import Anomaly, AnomalyReport, LLMFinalReport, ValidationResult
@@ -30,6 +31,43 @@ from src.agent.prompts import (
     VALIDATOR_SYSTEM_PROMPT,
     VALIDATOR_USER_PROMPT,
 )
+
+class TokenTrackerCallback(BaseCallbackHandler):
+    """Callback handler to track LLM token usage across all nodes in the graph."""
+
+    def __init__(self) -> None:
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.total_tokens = 0
+
+    def on_llm_end(self, response: Any, **kwargs: Any) -> None:
+        found_tokens = False
+        for generations in response.generations:
+            for generation in generations:
+                message = getattr(generation, "message", None)
+                if message:
+                    if hasattr(message, "usage_metadata") and message.usage_metadata:
+                        usage = message.usage_metadata
+                        self.prompt_tokens += usage.get("input_tokens", 0)
+                        self.completion_tokens += usage.get("output_tokens", 0)
+                        self.total_tokens += usage.get("total_tokens", 0)
+                        found_tokens = True
+                    elif hasattr(message, "response_metadata") and message.response_metadata:
+                        token_usage = message.response_metadata.get("token_usage")
+                        if token_usage:
+                            self.prompt_tokens += token_usage.get("prompt_tokens", 0)
+                            self.completion_tokens += token_usage.get("completion_tokens", 0)
+                            self.total_tokens += token_usage.get("total_tokens", 0)
+                            found_tokens = True
+        
+        if not found_tokens:
+            llm_output = getattr(response, "llm_output", None)
+            if llm_output and isinstance(llm_output, dict):
+                token_usage = llm_output.get("token_usage")
+                if token_usage and isinstance(token_usage, dict):
+                    self.prompt_tokens += token_usage.get("prompt_tokens", 0)
+                    self.completion_tokens += token_usage.get("completion_tokens", 0)
+                    self.total_tokens += token_usage.get("total_tokens", 0)
 
 load_dotenv()
 
@@ -294,12 +332,21 @@ async def finalize(state: AgentState, llm: ChatOpenAI) -> dict[str, Any]:
                     
     extracted_anomalies = sorted(list(extracted_anomalies_map.values()), key=lambda x: x.index)
 
+    tool_counts = {}
+    for msg in state["messages"]:
+        if hasattr(msg, "tool_calls") and msg.tool_calls:
+            for tc in msg.tool_calls:
+                name = tc.get("name")
+                if name:
+                    tool_counts[name] = tool_counts.get(name, 0) + 1
+
     structured = AnomalyReport(
         detectors_used=llm_report.detectors_used,
         summary=llm_report.summary,
         anomalies=extracted_anomalies,
         tools_called=tools_called,
-        anomaly_count=len(extracted_anomalies)
+        anomaly_count=len(extracted_anomalies),
+        tool_counts=tool_counts
     )
 
     # Read the fused per-point score vector that store_ensemble_scores wrote to disk.
@@ -501,10 +548,12 @@ async def run(series_id: str, *, skip_validator: bool = False) -> AnomalyReport:
             tools = await load_mcp_tools(session)
             logger.info("Loaded MCP tools: {}", [t.name for t in tools])
 
+            token_tracker = TokenTrackerCallback()
             llm = ChatOpenAI(
                 api_key=SecretStr(os.environ["OPENAI_API_KEY"]),
                 model=MODEL,
                 temperature=0,
+                callbacks=[token_tracker],
             )
             llm_with_tools = llm.bind_tools(tools)
             tool_node = ToolNode(tools)
@@ -520,8 +569,49 @@ async def run(series_id: str, *, skip_validator: bool = False) -> AnomalyReport:
                         "critique": "",
                         "iteration": 0,
                         "series_id": series_id,
-                    }
+                    },
+                    config={"callbacks": [token_tracker]}
                 ),
             )
 
-            return cast(AnomalyReport, final_state["result"])
+            report = cast(AnomalyReport, final_state["result"])
+            if report is not None:
+                report.prompt_tokens = token_tracker.prompt_tokens
+                report.completion_tokens = token_tracker.completion_tokens
+                report.total_tokens = token_tracker.total_tokens
+
+                try:
+                    from sqlalchemy import create_engine, text
+                    from src.utils.db import get_db_url
+                    
+                    method_name = "agentic_no_validator" if skip_validator else "agentic_with_validator"
+                    
+                    engine = create_engine(get_db_url())
+                    with engine.begin() as conn:
+                        conn.execute(text("""
+                            CREATE TABLE IF NOT EXISTS token_usage (
+                                id SERIAL PRIMARY KEY,
+                                dataset_name VARCHAR(255),
+                                method VARCHAR(255),
+                                prompt_tokens INTEGER,
+                                completion_tokens INTEGER,
+                                total_tokens INTEGER,
+                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                            )
+                        """))
+                        
+                        conn.execute(text("""
+                            INSERT INTO token_usage (dataset_name, method, prompt_tokens, completion_tokens, total_tokens)
+                            VALUES (:dataset, :method, :prompt, :completion, :total)
+                        """), {
+                            "dataset": series_id,
+                            "method": method_name,
+                            "prompt": token_tracker.prompt_tokens,
+                            "completion": token_tracker.completion_tokens,
+                            "total": token_tracker.total_tokens
+                        })
+                    logger.info("Recorded token usage for dataset {}: {} total tokens", series_id, token_tracker.total_tokens)
+                except Exception as db_err:
+                    logger.warning("Failed to record token usage to database: {}", db_err)
+
+            return report
