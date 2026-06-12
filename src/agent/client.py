@@ -532,13 +532,14 @@ def build_graph(
 
 
 
-async def run(series_id: str, *, skip_validator: bool = False) -> AnomalyReport:
+async def run(series_id: str, *, skip_validator: bool = False, db_method_name: str | None = None) -> AnomalyReport:
     """Run the TSAD pipeline and return the final AnomalyReport.
 
     Args:
         series_id: Identifier for the time series to analyse.
         skip_validator: If True, skip the validator/refinement agent
             (single-agent ablation mode).
+        db_method_name: Override method name recorded in the token_usage table.
     """
     server_params = default_mcp_server_params()
 
@@ -584,31 +585,27 @@ async def run(series_id: str, *, skip_validator: bool = False) -> AnomalyReport:
                     from sqlalchemy import create_engine, text
                     from src.utils.db import get_db_url
                     
-                    method_name = "agentic_no_validator" if skip_validator else "agentic_with_validator"
+                    method_name = db_method_name if db_method_name is not None else ("agentic_no_validator" if skip_validator else "agentic_with_validator")
                     
                     engine = create_engine(get_db_url())
                     with engine.begin() as conn:
                         conn.execute(text("""
                             CREATE TABLE IF NOT EXISTS token_usage (
                                 id SERIAL PRIMARY KEY,
-                                dataset_name VARCHAR(255),
+                                dataset VARCHAR(255),
                                 method VARCHAR(255),
-                                prompt_tokens INTEGER,
-                                completion_tokens INTEGER,
-                                total_tokens INTEGER,
+                                token_used INTEGER,
                                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                             )
                         """))
                         
                         conn.execute(text("""
-                            INSERT INTO token_usage (dataset_name, method, prompt_tokens, completion_tokens, total_tokens)
-                            VALUES (:dataset, :method, :prompt, :completion, :total)
+                            INSERT INTO token_usage (dataset, method, token_used)
+                            VALUES (:dataset, :method, :token_used)
                         """), {
                             "dataset": series_id,
                             "method": method_name,
-                            "prompt": token_tracker.prompt_tokens,
-                            "completion": token_tracker.completion_tokens,
-                            "total": token_tracker.total_tokens
+                            "token_used": token_tracker.total_tokens
                         })
                     logger.info("Recorded token usage for dataset {}: {} total tokens", series_id, token_tracker.total_tokens)
                 except Exception as db_err:
