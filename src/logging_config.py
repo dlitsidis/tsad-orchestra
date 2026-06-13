@@ -22,7 +22,7 @@ from loguru import logger
 
 _CONFIGURED = False
 
-# Repository root (two levels up from src/logging_config.py)
+# Repository root
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _LOG_DIR = _REPO_ROOT / "logs"
 
@@ -56,8 +56,7 @@ def setup_logging(
     resolved_dir.mkdir(parents=True, exist_ok=True)
     log_path = resolved_dir / f"{process_name}.log"
 
-    # Remove loguru's default stderr handler so we can replace it with our
-    # own formatted version.
+    # Replace default handler
     logger.remove()
 
 

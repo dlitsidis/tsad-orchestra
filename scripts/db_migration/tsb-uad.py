@@ -14,7 +14,6 @@ load_dotenv()
 
 
 URL = "https://www.thedatum.org/datasets/TSB-AD-U.zip"
-# Use Path for robust directory handling across different OS environments
 TARGET_DIR = Path("./scripts/db_migration/univariate/TSB-AD-U")
 DB_URL = f"postgresql://{os.getenv('POSTGRES_USER')}:{os.getenv('POSTGRES_PASSWORD')}@{os.getenv('POSTGRES_HOST')}:{os.getenv('POSTGRES_PORT', '5432')}/{os.getenv('POSTGRES_DB')}"  # noqa: E501
 SEED = int(os.getenv("RANDOM_SEED", 42))
@@ -27,7 +26,7 @@ def download_and_extract():
     resp = requests.get(URL)
     if resp.status_code == 200:
         with zipfile.ZipFile(BytesIO(resp.content)) as zip_ref:
-            zip_ref.extractall(TARGET_DIR.parent)  # Extracts into .../univariate/
+            zip_ref.extractall(TARGET_DIR.parent)
         print(f"Extracted to {TARGET_DIR.absolute()}")
         return True
     return False
@@ -39,8 +38,7 @@ def migrate_to_db():
         print(f"No CSVs found in {TARGET_DIR}")
         return
 
-    # Filter for timeseries with less than 6000 points
-    # Assumes 1 header line, so max 6000 lines total (5999 points)
+    # Filter timeseries with < 6000 points
     filtered_files = []
     for f in all_files:
         try:
@@ -69,7 +67,7 @@ def migrate_to_db():
     print(f"Migrating {len(selected_files)} files from {len(datasets)} datasets...")
 
     for i, file_path in enumerate(selected_files, 1):
-        # Table names must be lowercase and sanitized
+        # Sanitize table names
         tbl = file_path.stem.replace("-", "_").lower()
         print(f"[{i}/{len(selected_files)}] Processing {tbl}")
 

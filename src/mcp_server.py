@@ -26,9 +26,7 @@ setup_logging(process_name="mcp_server")
 mcp = FastMCP("tsad-orchestra")
 
 
-# Keyed by (series_name, detector_name).  Populated on first call; reused by
-# drill_down_range and store_ensemble_scores so each detector runs at most
-# once per series per server lifetime.
+# Cache for detector scores.
 _score_cache: dict[tuple[str, str], np.ndarray] = {}
 
 
@@ -50,7 +48,7 @@ def _get_or_compute_raw(
         logger.debug("Cache hit: {} / {}", name, detector_name)
         return _score_cache[key]
 
-    # Map short name → detector function (avoids a forward-reference problem)
+    # Map short name -> detector function
     _fn_map = {
         "lof": lambda n: _run_lof_raw(n),
         "hbos": lambda n: _run_hbos_raw(n),
@@ -78,12 +76,7 @@ def _compute_detector_summary(
     series_id: str,
     n_segments: int = 20,
 ) -> DetectorSummary:
-    """Build a compact stat-block from a raw [0, 1] score array.
-
-    The stat-block replaces the full anomaly list in the MCP tool response so
-    that the LLM context stays small regardless of series length.  Hot segments
-    point the agent toward suspicious regions for ``drill_down_range``.
-    """
+    """Build a compact stat-block from a raw [0, 1] score array."""
     n = len(scores)
 
     seg_size = max(1, n // n_segments)

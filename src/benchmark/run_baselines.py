@@ -10,7 +10,7 @@ from TSB_UAD.vus.metrics import get_metrics
 
 def calculate_metrics(y_true, y_score, sliding_window):
     metrics = get_metrics(score=y_score, labels=y_true, slidingWindow=sliding_window)
-    # Convert numpy types to float for db insertion
+    # Convert to float
     return {k: float(v) for k, v in metrics.items()}
 
 def main():

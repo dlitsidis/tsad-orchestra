@@ -98,7 +98,7 @@ def plot_token_usage(save_path: str | None = None) -> None:
         linewidth=0.8,
     )
 
-    # Value annotations on top of each bar
+    # Value annotations
     for bar, val in zip(bars, values):
         ax.text(
             bar.get_x() + bar.get_width() / 2,

@@ -80,7 +80,7 @@ def fetch_tool_usage_data() -> tuple[list[str], dict[str, list[float]]]:
     # Rows: tool_name, Columns: method, Values: avg_count
     df_pivot = df.pivot(index="tool_name", columns="method", values="avg_count").fillna(0)
 
-    # Sort tools by total usage across both methods descending
+    # Sort tools
     df_pivot["total"] = df_pivot.sum(axis=1)
     df_pivot = df_pivot.sort_values("total", ascending=False).drop(columns=["total"])
 

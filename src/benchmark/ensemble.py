@@ -16,7 +16,7 @@ from TSB_UAD.vus.metrics import get_metrics
 
 def calculate_metrics(y_true, y_score, sliding_window):
     metrics = get_metrics(score=y_score, labels=y_true, slidingWindow=sliding_window)
-    # Convert numpy types to float for db insertion
+    # Convert to float
     return {k: float(v) for k, v in metrics.items()}
 
 def main():
@@ -77,7 +77,7 @@ def main():
         try:
             scores = []
             
-            # Get individual scores
+            # Individual scores
             print("    Running lof...")
             scores.append(lof_detector(table))
             
@@ -93,7 +93,7 @@ def main():
             print("    Running poly...")
             scores.append(poly_detector(table))
             
-            # Fuse scores to a mean score
+            # Fuse scores
             y_score = np.mean(scores, axis=0)
             
             metrics = calculate_metrics(y_true, y_score, slidingWindow)

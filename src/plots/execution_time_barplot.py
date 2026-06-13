@@ -115,7 +115,7 @@ def plot_execution_time(save_path: str | None = None) -> None:
         linewidth=0.8,
     )
 
-    # Value annotations on top of each bar
+    # Value annotations
     for bar, val in zip(bars, values):
         ax.text(
             bar.get_x() + bar.get_width() / 2,
@@ -143,7 +143,7 @@ def plot_execution_time(save_path: str | None = None) -> None:
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
-    # Compact x-axis: reduce padding around bars
+    # Compact x-axis
     ax.set_xlim(-0.5, len(labels) - 0.5)
 
     # Legend

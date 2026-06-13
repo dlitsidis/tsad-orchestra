@@ -98,7 +98,7 @@ def plot_avg_vus_roc(save_path: str | None = None) -> None:
     bar_width = 0.7
     bars = ax.bar(x, values, width=bar_width, color=colors, edgecolor="white", linewidth=0.8)
 
-    # Value annotations on top of each bar
+    # Value annotations
     for bar, val in zip(bars, values):
         ax.text(
             bar.get_x() + bar.get_width() / 2,
@@ -136,7 +136,7 @@ def plot_avg_vus_roc(save_path: str | None = None) -> None:
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
         print(f"Figure saved to {save_path}")
-        # Also export as SVG
+        # Export as SVG
         svg_path = save_path.rsplit(".", 1)[0] + ".svg"
         fig.savefig(svg_path, format="svg", bbox_inches="tight")
         print(f"Figure saved to {svg_path}")

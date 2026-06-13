@@ -13,7 +13,7 @@ async def main():
     random.seed(RANDOM_SEED)
     
     tables = list_tables()
-    # Exclude metadata tables and the execution_time table itself
+    # Exclude metadata tables
     ts_tables = [t for t in tables if t not in ('experiments', 'execution_time')]
 
     if len(ts_tables) > SUBSET_SIZE:

@@ -10,8 +10,7 @@ from __future__ import annotations
 import numpy as np
 from loguru import logger
 
-# Maps both short names ('iforest') and full names ('iforest_detector') to the
-# canonical short key used to look up the detector function.
+# Map names to canonical short key
 _NAME_MAP: dict[str, str] = {
     "lof": "lof",
     "hbos": "hbos",
@@ -34,10 +33,7 @@ def _normalize(name: str) -> str:
 def compute_ensemble_scores(series_name: str, detector_names: list[str]) -> list[float]:
     """Run each detector in raw mode and return a mean-fused [0, 1] score vector.
 
-    This is a pure Python call (no MCP round-trip) intended to be executed
-    from the ``finalize`` graph node *after* the LLM has decided which
-    detectors to use.  The result is stored in ``AnomalyReport.point_scores``
-    and is never injected into the LLM context.
+    This is a pure Python call intended to be executed from the finalize graph node.
 
     Args:
         series_name: The series name or ID forwarded to each detector.
@@ -97,7 +93,7 @@ def compute_ensemble_scores(series_name: str, detector_names: list[str]) -> list
         )
         return []
 
-    # Align lengths (edge case: padding artefacts can differ by a few indices)
+    # Align lengths
     min_len = min(len(s) for s in score_arrays)
     trimmed = [s[:min_len] for s in score_arrays]
 

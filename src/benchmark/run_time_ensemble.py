@@ -17,7 +17,7 @@ def main():
     random.seed(RANDOM_SEED)
     
     tables = list_tables()
-    # Exclude metadata tables and the execution_time table itself
+    # Exclude metadata tables
     ts_tables = [t for t in tables if t not in ('experiments', 'execution_time')]
 
     if len(ts_tables) > SUBSET_SIZE:
@@ -58,7 +58,7 @@ def main():
             scores.append(pca_detector(table))
             scores.append(poly_detector(table))
             
-            # Fuse scores to a mean score
+            # Fuse scores
             _ = np.mean(scores, axis=0)
             
             elapsed_time = time.perf_counter() - start_time

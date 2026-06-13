@@ -59,7 +59,7 @@ def read_time_series(
         db_url = get_db_url()
         engine = create_engine(db_url)
 
-        # Build the query with quoted table name (handles table names starting with numbers)
+        # Build query
         query = f'SELECT {time_column}, {value_column} FROM "{table_name}"'
 
         query += f" ORDER BY {time_column} ASC"
@@ -101,7 +101,7 @@ def read_time_series_full(
         db_url = get_db_url()
         engine = create_engine(db_url)
 
-        # Build the query with quoted table name (handles table names starting with numbers)
+        # Build query
         query = f'SELECT * FROM "{table_name}"'
 
         query += f" ORDER BY {time_column} ASC"

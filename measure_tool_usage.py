@@ -15,7 +15,7 @@ async def run_tool_usage_benchmark(
 ):
     random.seed(seed)
     
-    # Get tables (already filtered by list_tables to exclude metadata tables)
+    # Get tables
     tables = list_tables()
     
     if len(tables) > subset_size:
@@ -47,13 +47,13 @@ async def run_tool_usage_benchmark(
             
             tool_counts = getattr(report, "tool_counts", {})
             if tool_counts:
-                # Format a string of counts for print
+                # Format string
                 counts_str = ", ".join(f"{t}: {c}" for t, c in sorted(tool_counts.items()))
                 print(f"  -> Tool usage: {counts_str}")
                 
                 # Write to database
                 with engine.begin() as conn:
-                    # Clear any existing runs for this dataset/method
+                    # Clear existing runs
                     conn.execute(
                         text("DELETE FROM tool_usage WHERE dataset_name = :dataset AND method = :method"),
                         {"dataset": table, "method": method_name}
@@ -79,7 +79,7 @@ async def run_tool_usage_benchmark(
     print("           TOOL USAGE SUMMARY           ")
     print("=" * 40)
     if total_tool_counts:
-        # Print a nice aligned table
+        # Print table
         print(f"{'Tool Name':<30} | {'Total Invocations':<15}")
         print("-" * 50)
         for tool_name, count in sorted(total_tool_counts.items(), key=lambda x: x[1], reverse=True):

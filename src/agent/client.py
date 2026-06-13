@@ -133,9 +133,7 @@ def default_mcp_server_params() -> StdioServerParameters:
 async def call_model(state: AgentState, llm_with_tools: Any) -> dict[str, Any]:
     """Invoke the primary LLM.
 
-    Empty messages = start of a new iteration: build the opening prompt,
-    appending the validator critique if this is a retry.
-    Non-empty messages = mid-iteration tool loop: forward history as-is.
+    Handle empty and non-empty messages.
     """
     if not state["messages"]:
         user_content = AGENT_USER_PROMPT.format(series_id=state["series_id"])
@@ -268,8 +266,8 @@ async def finalize(state: AgentState, llm: ChatOpenAI) -> dict[str, Any]:
         dict.fromkeys(tc["name"] for msg in state["messages"] if hasattr(msg, "tool_calls") for tc in (msg.tool_calls or []))
     )
 
-    # Let the LLM consolidate the two-phase results into a structured report.
-    # Point-level scoring is computed deterministically below — not by the LLM.
+    # Consolidate results into a structured report.
+    # Point-level scoring is deterministic.
     llm_report = cast(
         LLMFinalReport,
         await _invoke_with_backoff(
@@ -349,8 +347,7 @@ async def finalize(state: AgentState, llm: ChatOpenAI) -> dict[str, Any]:
         tool_counts=tool_counts
     )
 
-    # Read the fused per-point score vector that store_ensemble_scores wrote to disk.
-    # This avoids re-running any detector — the MCP server cached everything.
+    # Read fused per-point score vector from disk.
     import json
     import tempfile
     score_path = os.path.join(tempfile.gettempdir(), f"tsad_ensemble_{state['series_id']}.json")
@@ -399,7 +396,7 @@ async def validate(state: AgentState, llm: ChatOpenAI) -> dict[str, Any]:
 
     context = _collect_tool_results(state["messages"])
 
-    # 1. Deterministic Rule Checks (prevents LLM counting hallucinations)
+    # 1. Deterministic Rule Checks
     tools_called = list(
         dict.fromkeys(
             tc["name"]
@@ -427,7 +424,7 @@ async def validate(state: AgentState, llm: ChatOpenAI) -> dict[str, Any]:
         retry_msg = {"role": "user", "content": f"SYSTEM/VALIDATOR: Your report was rejected.\n\nReason: {critique}\n\nYou must call the appropriate tools (e.g., drill_down_range) to fix this. Do not just reply with text."}
         return {"critique": critique, "iteration": new_iteration, "messages": [retry_msg]}
 
-    # 2. LLM Checks (for logic, tracing anomalies, etc.)
+    # 2. LLM Checks
     user_msg = VALIDATOR_USER_PROMPT.format(
         series_id=state["series_id"],
         iteration=new_iteration,
